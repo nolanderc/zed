@@ -1,0 +1,7 @@
+
+[workspace]
+members = [
+    "zed_syntax",
+    "zedc",
+]
+
