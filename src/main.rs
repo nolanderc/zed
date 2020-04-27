@@ -2,7 +2,18 @@ mod hir;
 mod lexer;
 mod syntax;
 
-pub fn parse(input: &str) -> Result<(), Box<dyn std::error::Error>> {
+use std::io::{self, Read};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut source = String::new();
+    io::stdin().read_to_string(&mut source)?;
+
+    parse(&source)?;
+
+    Ok(())
+}
+
+fn parse(input: &str) -> Result<(), Box<dyn std::error::Error>> {
     let tokens = lexer::tokenize(input).map_err(|e| nom::error::convert_error(input, e))?;
     let ast = syntax::parse(&tokens).map_err(|e| e.format(input))?;
     let _module = hir::Module::load(&ast)?;

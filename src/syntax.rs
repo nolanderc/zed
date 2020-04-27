@@ -58,8 +58,8 @@ pub enum Expr {
     Binding(Box<ExprBinding>),
     Literal(Box<ExprLiteral>),
     ForLoop(Box<ExprFor>),
-    Path(Box<Path>),
     Constructor(Box<ExprConstructor>),
+    Ident(Ident),
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +79,7 @@ type Argument = Expr;
 
 #[derive(Debug, Clone)]
 pub struct ExprCall {
-    pub path: Path,
+    pub ident: Ident,
     pub open_parens: Token,
     pub arguments: Vec<Argument>,
     pub close_parens: Token,
@@ -103,7 +103,7 @@ pub enum ExprLiteral {
 #[derive(Debug, Clone)]
 pub struct ExprString {
     pub token: Token,
-    pub value: String,
+    pub value: Rc<str>,
 }
 
 #[derive(Debug, Clone)]
@@ -154,7 +154,7 @@ pub struct ExprRange {
 
 #[derive(Debug, Clone)]
 pub struct ExprConstructor {
-    pub path: Path,
+    pub ident: Ident,
     pub open_curly: Token,
     pub initializers: Vec<Initializer>,
     pub close_curly: Token,
@@ -194,16 +194,11 @@ pub struct Variant {
 pub type Ident = Token;
 
 #[derive(Debug, Clone)]
-pub struct Path {
-    pub idents: Vec<Ident>,
-}
-
-#[derive(Debug, Clone)]
 pub enum Type {
     Primitive(PrimitiveType),
     Struct(Struct),
     Enum(Enum),
-    Alias(Path),
+    Alias(Ident),
     Unit,
 }
 
@@ -299,7 +294,7 @@ type PResult<'a, T> = nom::IResult<Input<'a>, T, Error>;
 
 impl Error {
     fn source_location(input: Input) -> SourceLocation {
-        input.first().and_then(|token| token.offset)
+        input.first().map(|token| token.span.start)
     }
 
     pub fn single(input: Input, kind: ErrorKind) -> Self {
@@ -488,7 +483,7 @@ fn expr(input: Input) -> PResult<Expr> {
         map(context("constructor", expr_constructor), |e| {
             Expr::Constructor(e.into())
         }),
-        map(context("path", path), |e| Expr::Path(e.into())),
+        map(context("ident", ident), Expr::Ident),
     ))(input)
 }
 
@@ -513,8 +508,8 @@ fn expr_block(input: Input) -> PResult<ExprBlock> {
             // semicolon always required
             Expr::Binding(_) => map(symbol(';'), Some)(tokens)?,
 
-            // semicolon required if inline
-            Expr::Path(_) | Expr::Constructor(_) | Expr::Literal(_) | Expr::Call(_) => {
+            // semicolon required if not final expression
+            Expr::Ident(_) | Expr::Constructor(_) | Expr::Literal(_) | Expr::Call(_) => {
                 match symbol(';')(tokens) {
                     Ok((rest, semi_token)) => (rest, Some(semi_token)),
                     Err(_) => {
@@ -546,13 +541,13 @@ fn expr_block(input: Input) -> PResult<ExprBlock> {
 fn expr_call(input: Input) -> PResult<ExprCall> {
     map(
         tuple((
-            path,
+            ident,
             symbol('('),
             context("function arguments", argument_list),
             symbol(')'),
         )),
-        |(path, open_parens, arguments, close_parens)| ExprCall {
-            path,
+        |(ident, open_parens, arguments, close_parens)| ExprCall {
+            ident,
             open_parens,
             arguments,
             close_parens,
@@ -604,9 +599,9 @@ fn expr_range(input: Input) -> PResult<ExprRange> {
 
 fn expr_constructor(input: Input) -> PResult<ExprConstructor> {
     map(
-        tuple((path, symbol('{'), initializer_list, symbol('}'))),
-        |(path, open_curly, initializers, close_curly)| ExprConstructor {
-            path,
+        tuple((ident, symbol('{'), initializer_list, symbol('}'))),
+        |(ident, open_curly, initializers, close_curly)| ExprConstructor {
+            ident,
             open_curly,
             initializers,
             close_curly,
@@ -626,7 +621,13 @@ fn expr_string(input: Input) -> PResult<ExprString> {
     let (rest, token) = string_literal(input)?;
     let value =
         parse_string(&token.text).map_err(|e| nom::Err::Failure(Error::single(input, e)))?;
-    Ok((rest, ExprString { token, value }))
+    Ok((
+        rest,
+        ExprString {
+            token,
+            value: value.into(),
+        },
+    ))
 }
 
 fn expr_integer(input: Input) -> PResult<ExprInteger> {
@@ -734,7 +735,7 @@ fn parse_type(input: Input) -> PResult<Type> {
             map(struct_type, Type::Struct),
             map(enum_type, Type::Enum),
             map(primitive, Type::Primitive),
-            map(path, Type::Alias),
+            map(ident, Type::Alias),
             map(pair(symbol('('), symbol(')')), |_| Type::Unit),
         )),
     )(input)
@@ -772,7 +773,7 @@ fn enum_type(input: Input) -> PResult<Enum> {
 
 fn initializer_list(input: Input) -> PResult<Vec<Initializer>> {
     terminated(
-        separated_list(symbol(','), context("initializer", initializer)),
+        separated_list(cut(symbol(',')), context("initializer", initializer)),
         opt(symbol(',')),
     )(input)
 }
@@ -850,12 +851,6 @@ fn generics(input: Input) -> PResult<Generics> {
             gt_token,
         },
     )(input)
-}
-
-fn path(input: Input) -> PResult<Path> {
-    map(separated_nonempty_list(symbol('.'), ident), |idents| Path {
-        idents,
-    })(input)
 }
 
 fn ident(input: Input) -> PResult<Ident> {
@@ -963,23 +958,11 @@ impl Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Type::Unit => write!(f, "`()`"),
-            Type::Alias(path) => write!(f, "{}", path),
+            Type::Alias(ident) => write!(f, "{}", ident),
             Type::Enum(enum_type) => write!(f, "{}", enum_type),
             Type::Struct(struct_type) => write!(f, "{}", struct_type),
             Type::Primitive(primitive) => write!(f, "{}", primitive.kind),
         }
-    }
-}
-
-impl Display for Path {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let segments = self
-            .idents
-            .iter()
-            .map(|ident| ident.text.as_ref())
-            .collect::<Vec<_>>()
-            .join(".");
-        write!(f, "`{}`", segments)
     }
 }
 

@@ -8,11 +8,17 @@ use nom::combinator::*;
 use nom::error::context;
 use nom::sequence::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
-    pub offset: Option<usize>,
+    pub span: Span,
     pub text: Rc<str>,
     pub kind: TokenKind,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub length: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -81,23 +87,28 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, Error> {
         text = text.trim_start();
         if text.is_empty() {
             break;
-        }
-
-        let token_start = input.len() - text.len();
-        match complete(token_kind)(text) {
-            Ok((rest, kind)) => {
-                let token_end = input.len() - rest.len();
-                tokens.push(Token {
-                    offset: Some(token_start),
-                    text: input[token_start..token_end].into(),
-                    kind,
-                });
-                text = rest;
+        } else if text.starts_with("//") {
+            text = text.trim_start_matches(|ch| ch != '\n');
+        } else {
+            match complete(token_kind)(text) {
+                Ok((rest, kind)) => {
+                    let token_start = input.len() - text.len();
+                    let token_end = input.len() - rest.len();
+                    tokens.push(Token {
+                        span: Span {
+                            start: token_start,
+                            length: token_end - token_start,
+                        },
+                        text: input[token_start..token_end].into(),
+                        kind,
+                    });
+                    text = rest;
+                }
+                Err(e) => match e {
+                    nom::Err::Incomplete(_) => unreachable!("using complete parser"),
+                    nom::Err::Error(e) | nom::Err::Failure(e) => return Err(e),
+                },
             }
-            Err(e) => match e {
-                nom::Err::Incomplete(_) => unreachable!("using complete parser"),
-                nom::Err::Error(e) | nom::Err::Failure(e) => return Err(e),
-            },
         }
     }
 

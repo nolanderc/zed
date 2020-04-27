@@ -14,20 +14,21 @@ type Gender = enum {
 
 type Void = ();
 
+const println = fn (text str) {}
+
 const main = fn () -> i32 {
     println("Hello, World");
 
-    let age = 32u32;
+    let age = 42u32;
     let person = Person {
         .id = 1u32,
         .name = "John Wick",
-        .age = age,
+        .age = Age(age),
     };
 
-    for x in 0..10 {
-        println(person.name);
-    }
+    // for x in 0..10 {
+    //     println(person.name);
+    // }
 
     42
 }
-
