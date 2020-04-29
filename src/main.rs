@@ -23,7 +23,7 @@ fn parse(input: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn sample() {
-    let text = include_str!("../samples/sample.sol");
+    let text = include_str!("../samples/sample.zed");
     if let Err(e) = parse(text) {
         panic!("error:\n{}", e);
     }
@@ -31,7 +31,7 @@ fn sample() {
 
 #[test]
 fn hello_world() {
-    let text = include_str!("../samples/hello_world.sol");
+    let text = include_str!("../samples/hello_world.zed");
     if let Err(e) = parse(text) {
         panic!("error:\n{}", e);
     }

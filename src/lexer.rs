@@ -37,6 +37,8 @@ pub enum Keyword {
     Trait,
     Macro,
 
+    Extern,
+
     Type,
     Const,
     Let,
@@ -131,6 +133,7 @@ fn keyword(input: &str) -> PResult<Keyword> {
         map(tag("enum"), |_| Keyword::Enum),
         map(tag("trait"), |_| Keyword::Trait),
         map(tag("macro"), |_| Keyword::Macro),
+        map(tag("extern"), |_| Keyword::Extern),
         map(tag("const"), |_| Keyword::Const),
         map(tag("type"), |_| Keyword::Type),
         map(tag("let"), |_| Keyword::Let),
@@ -232,6 +235,7 @@ impl Display for Keyword {
             Keyword::Enum => "`enum`".fmt(f),
             Keyword::Trait => "`trait`".fmt(f),
             Keyword::Macro => "`macro`".fmt(f),
+            Keyword::Extern => "`extern`".fmt(f),
 
             Keyword::Type => "`type`".fmt(f),
             Keyword::Const => "`const`".fmt(f),

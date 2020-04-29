@@ -49,6 +49,7 @@ pub struct TypeDecl {
 #[derive(Debug, Clone)]
 pub enum ConstInit {
     Function(Function),
+    Extern(ExternFunction),
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +61,20 @@ pub enum Expr {
     ForLoop(Box<ExprFor>),
     Constructor(Box<ExprConstructor>),
     Ident(Ident),
+    Infix(Infix),
+}
+
+#[derive(Debug, Clone)]
+pub struct Infix {
+    pub operator: BinaryOperator,
+    pub lhs: Box<Expr>,
+    pub rhs: Box<Expr>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum BinaryOperator {
+    Dot,
+    Range,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +137,7 @@ pub enum Integer {
     I16(i16),
     I32(i32),
     I64(i64),
+    Any(Rc<str>),
 }
 
 #[derive(Debug, Clone)]
@@ -141,15 +157,8 @@ pub struct ExprFor {
     pub for_token: Token,
     pub ident: Ident,
     pub in_token: Token,
-    pub range: ExprRange,
+    pub range: Box<Expr>,
     pub body: Box<ExprBlock>,
-}
-
-#[derive(Debug, Clone)]
-pub struct ExprRange {
-    pub start: Box<Expr>,
-    pub range_token: Token,
-    pub end: Box<Expr>,
 }
 
 #[derive(Debug, Clone)]
@@ -227,11 +236,24 @@ pub struct Enum {
 #[derive(Debug, Clone)]
 pub struct Function {
     pub fn_token: Token,
+    pub signature: Signature,
+    pub body: ExprBlock,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternFunction {
+    pub extern_token: Token,
+    pub fn_token: Token,
+    pub signature: Signature,
+    pub semi_token: Token,
+}
+
+#[derive(Debug, Clone)]
+pub struct Signature {
     pub open_parens: Token,
     pub arguments: Fields,
     pub close_parens: Token,
     pub return_clause: Option<ReturnClause>,
-    pub body: ExprBlock,
 }
 
 #[derive(Debug, Clone)]
@@ -432,7 +454,29 @@ fn item_const(input: Input) -> PResult<ItemConst> {
 }
 
 fn const_init(input: Input) -> PResult<ConstInit> {
-    map(function, ConstInit::Function)(input)
+    alt((
+        map(extern_function, ConstInit::Extern),
+        map(function, ConstInit::Function),
+    ))(input)
+}
+
+fn extern_function(input: Input) -> PResult<ExternFunction> {
+    map(
+        tuple((
+            keyword(Keyword::Extern),
+            cut(tuple((
+                keyword(Keyword::Function),
+                function_signature,
+                symbol(';'),
+            ))),
+        )),
+        |(extern_token, (fn_token, signature, semi_token))| ExternFunction {
+            extern_token,
+            fn_token,
+            signature,
+            semi_token,
+        },
+    )(input)
 }
 
 fn function(input: Input) -> PResult<Function> {
@@ -440,20 +484,26 @@ fn function(input: Input) -> PResult<Function> {
         tuple((
             keyword(Keyword::Function),
             cut(tuple((
-                symbol('('),
-                fields,
-                symbol(')'),
-                opt(return_clause),
+                function_signature,
                 context("function body", expr_block),
             ))),
         )),
-        |(fn_token, (open_parens, arguments, close_parens, return_clause, body))| Function {
+        |(fn_token, (signature, body))| Function {
             fn_token,
+            signature,
+            body,
+        },
+    )(input)
+}
+
+fn function_signature(input: Input) -> PResult<Signature> {
+    map(
+        tuple((symbol('('), fields, symbol(')'), opt(return_clause))),
+        |(open_parens, arguments, close_parens, return_clause)| Signature {
             open_parens,
             arguments,
             close_parens,
             return_clause,
-            body,
         },
     )(input)
 }
@@ -465,17 +515,23 @@ fn return_clause(input: Input) -> PResult<ReturnClause> {
     )(input)
 }
 
-fn expr(input: Input) -> PResult<Expr> {
+fn expr_statement(input: Input) -> PResult<Expr> {
     alt((
-        map(context("block", expr_block), |e| Expr::Block(e.into())),
-        map(context("function call", expr_call), |e| {
-            Expr::Call(e.into())
-        }),
         map(context("let binding", expr_binding), |e| {
             Expr::Binding(e.into())
         }),
         map(context("for loop", expr_for_loop), |e| {
             Expr::ForLoop(e.into())
+        }),
+        expr_inline,
+    ))(input)
+}
+
+fn expr_primary(input: Input) -> PResult<Expr> {
+    alt((
+        map(context("block", expr_block), |e| Expr::Block(e.into())),
+        map(context("function call", expr_call), |e| {
+            Expr::Call(e.into())
         }),
         map(context("literal constant", expr_literal), |e| {
             Expr::Literal(e.into())
@@ -487,13 +543,66 @@ fn expr(input: Input) -> PResult<Expr> {
     ))(input)
 }
 
+fn expr_inline(input: Input) -> PResult<Expr> {
+    let (rest, lhs) = expr_primary(input)?;
+    expr_infix(lhs, 0)(rest)
+}
+
+fn expr_infix(mut lhs: Expr, min_precedence: u32) -> impl FnOnce(Input) -> PResult<Expr> {
+    move |mut input| {
+        while let (rest, Some(operator)) = opt(binary_operator)(input)? {
+            if operator.precedence() < min_precedence {
+                break;
+            }
+
+            let (rest, mut rhs) = expr_primary(rest)?;
+            input = rest;
+
+            while let (rest, Some(next_operator)) = opt(binary_operator)(input)? {
+                if next_operator.precedence() > operator.precedence() {
+                    let (rest, next) = expr_infix(rhs, next_operator.precedence())(rest)?;
+                    input = rest;
+                    rhs = next;
+                } else {
+                    break;
+                }
+            }
+
+            input = rest;
+            lhs = Expr::Infix(Infix {
+                operator,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            });
+        }
+
+        Ok((input, lhs))
+    }
+}
+
+impl BinaryOperator {
+    fn precedence(self) -> u32 {
+        match self {
+            BinaryOperator::Dot => 2,
+            BinaryOperator::Range => 1,
+        }
+    }
+}
+
+fn binary_operator(input: Input) -> PResult<BinaryOperator> {
+    alt((
+        map(symbol('.'), |_| BinaryOperator::Dot),
+        map(symbol(Symbol::Range), |_| BinaryOperator::Range),
+    ))(input)
+}
+
 fn expr_block(input: Input) -> PResult<ExprBlock> {
     let mut sequence = Vec::<ExprSeq>::new();
 
     let (mut tokens, open_curly) = symbol('{')(input)?;
 
     loop {
-        let (remaining, expr) = match expr(tokens) {
+        let (remaining, expr) = match expr_statement(tokens) {
             Ok(result) => result,
             Err(e @ nom::Err::Failure(_)) => return Err(e),
             Err(_) => break,
@@ -509,18 +618,20 @@ fn expr_block(input: Input) -> PResult<ExprBlock> {
             Expr::Binding(_) => map(symbol(';'), Some)(tokens)?,
 
             // semicolon required if not final expression
-            Expr::Ident(_) | Expr::Constructor(_) | Expr::Literal(_) | Expr::Call(_) => {
-                match symbol(';')(tokens) {
-                    Ok((rest, semi_token)) => (rest, Some(semi_token)),
-                    Err(_) => {
-                        sequence.push(ExprSeq {
-                            expr,
-                            semi_token: None,
-                        });
-                        break;
-                    }
+            Expr::Infix(_)
+            | Expr::Ident(_)
+            | Expr::Constructor(_)
+            | Expr::Literal(_)
+            | Expr::Call(_) => match symbol(';')(tokens) {
+                Ok((rest, semi_token)) => (rest, Some(semi_token)),
+                Err(_) => {
+                    sequence.push(ExprSeq {
+                        expr,
+                        semi_token: None,
+                    });
+                    break;
                 }
-            }
+            },
         };
 
         sequence.push(ExprSeq { expr, semi_token });
@@ -543,10 +654,12 @@ fn expr_call(input: Input) -> PResult<ExprCall> {
         tuple((
             ident,
             symbol('('),
-            context("function arguments", argument_list),
-            symbol(')'),
+            cut(tuple((
+                context("function arguments", argument_list),
+                symbol(')'),
+            ))),
         )),
-        |(ident, open_parens, arguments, close_parens)| ExprCall {
+        |(ident, open_parens, (arguments, close_parens))| ExprCall {
             ident,
             open_parens,
             arguments,
@@ -559,7 +672,7 @@ fn expr_binding(input: Input) -> PResult<ExprBinding> {
     map(
         tuple((
             keyword(Keyword::Let),
-            cut(tuple((ident, symbol('='), expr))),
+            cut(tuple((ident, symbol('='), expr_inline))),
         )),
         |(let_token, (ident, eq_token, value))| ExprBinding {
             let_token,
@@ -574,25 +687,19 @@ fn expr_for_loop(input: Input) -> PResult<ExprFor> {
     map(
         tuple((
             keyword(Keyword::For),
-            cut(tuple((ident, keyword(Keyword::In), expr_range, expr_block))),
+            cut(tuple((
+                ident,
+                keyword(Keyword::In),
+                expr_inline,
+                expr_block,
+            ))),
         )),
         |(for_token, (ident, in_token, range, body))| ExprFor {
             for_token,
             ident,
             in_token,
-            range,
+            range: Box::new(range),
             body: Box::new(body),
-        },
-    )(input)
-}
-
-fn expr_range(input: Input) -> PResult<ExprRange> {
-    map(
-        tuple((expr, symbol(Symbol::Range), expr)),
-        |(start, range_token, end)| ExprRange {
-            start: Box::new(start),
-            range_token,
-            end: Box::new(end),
         },
     )(input)
 }
@@ -702,7 +809,7 @@ fn parse_integer(text: &str) -> Result<Integer, ErrorKind> {
 
             (&text[..suffix_start], parse)
         } else {
-            (text, |text| text.parse().map(Integer::I32))
+            (text, |text| Ok(Integer::Any(text.into())))
         };
 
     Ok(parse(integer_part)?)
@@ -780,7 +887,7 @@ fn initializer_list(input: Input) -> PResult<Vec<Initializer>> {
 
 fn initializer(input: Input) -> PResult<Initializer> {
     map(
-        tuple((symbol('.'), cut(tuple((ident, symbol('='), expr))))),
+        tuple((symbol('.'), cut(tuple((ident, symbol('='), expr_inline))))),
         |(dot_token, (ident, eq_token, value))| Initializer {
             dot_token,
             ident,
@@ -792,7 +899,7 @@ fn initializer(input: Input) -> PResult<Initializer> {
 
 fn argument_list(input: Input) -> PResult<Vec<Argument>> {
     terminated(
-        separated_list(symbol(','), context("when parsing argument", expr)),
+        separated_list(symbol(','), context("when parsing argument", expr_inline)),
         opt(symbol(',')),
     )(input)
 }
