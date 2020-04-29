@@ -1,7 +1,7 @@
 use super::*;
 
 impl<'a> Scope<'a> {
-    pub fn type_of(&self, ident: Identifier) -> TypeId {
+    pub(super) fn type_of(&self, ident: Identifier) -> TypeId {
         match ident {
             Identifier::Local(local) => *self.locals.get(&local).unwrap(),
             Identifier::Global(Item::Type(ty)) => ty,
@@ -10,11 +10,10 @@ impl<'a> Scope<'a> {
             }
         }
     }
-
 }
 
 impl TypeId {
-    pub fn expect(self, expected: TypeId) -> Result<()> {
+    pub(super) fn expect(self, expected: TypeId) -> Result<()> {
         if self == expected {
             Ok(())
         } else {
@@ -27,7 +26,7 @@ impl TypeId {
 }
 
 impl ExprKind {
-    pub fn type_check(&self, scope: &mut Scope) -> Result<TypeId> {
+    pub(super) fn type_check(&self, scope: &mut Scope) -> Result<TypeId> {
         let ty = match &self {
             ExprKind::Block(block) => block.type_check()?,
             ExprKind::Ident(ident) => scope.type_of(*ident),
@@ -43,7 +42,7 @@ impl ExprKind {
 }
 
 impl ExprBlock {
-    pub fn type_check(&self) -> Result<TypeId> {
+    pub(super) fn type_check(&self) -> Result<TypeId> {
         let mut previous = Namespace::TYPE_UNIT;
 
         for expr in &self.sequence {
@@ -56,7 +55,7 @@ impl ExprBlock {
 }
 
 impl ExprBinding {
-    pub fn type_check(&self, scope: &mut Scope) -> TypeId {
+    pub(super) fn type_check(&self, scope: &mut Scope) -> TypeId {
         let ty = self.value.ty;
         scope.locals.insert(self.local, ty);
         Namespace::TYPE_UNIT
@@ -64,7 +63,7 @@ impl ExprBinding {
 }
 
 impl ExprInvocation {
-    pub fn type_check(&self, scope: &mut Scope) -> Result<TypeId> {
+    pub(super) fn type_check(&self, scope: &mut Scope) -> Result<TypeId> {
         let signature = scope
             .lookup_signature(self.target)
             .ok_or_else(|| Error::NotCallable { ident: self.target })?;
@@ -78,7 +77,7 @@ impl ExprInvocation {
 }
 
 impl ExprConstructor {
-    pub fn type_check(&self, scope: &Scope) -> Result<TypeId> {
+    pub(super) fn type_check(&self, scope: &Scope) -> Result<TypeId> {
         let mut properties = Vec::with_capacity(self.initializers.len());
         match scope.get_type(self.base) {
             Type::Struct { fields } => {
@@ -102,7 +101,7 @@ impl ExprConstructor {
 }
 
 impl ExprAccess {
-    pub fn type_check(&self, scope: &Scope) -> Result<TypeId> {
+    pub(super) fn type_check(&self, scope: &Scope) -> Result<TypeId> {
         let ty = match scope.get_type(self.base.ty) {
             Type::Struct { fields } => fields
                 .iter()
@@ -123,7 +122,7 @@ impl ExprAccess {
 }
 
 impl ExprLiteral {
-    pub fn type_check(&self) -> TypeId {
+    pub(super) fn type_check(&self) -> TypeId {
         match self {
             ExprLiteral::String(_) => Namespace::TYPE_STR,
             ExprLiteral::Integer(ExprInteger::U8(_)) => Namespace::TYPE_U8,

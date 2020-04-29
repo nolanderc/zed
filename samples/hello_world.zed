@@ -1,6 +1,8 @@
-const println = fn (text str) {}
+const puts = extern fn (text str);
 
 const main = fn () {
-    println("Hello, world");
+    puts("Hello, world!");
+    puts("This is my very own programming language.");
+    puts("And it is amazing!!!");
 }
 

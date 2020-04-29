@@ -9,3 +9,5 @@ edition = "2018"
 [dependencies]
 nom = "5.1.1"
 thiserror = "1.0.14"
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "llvm7-0" }
+structopt = "0.3.14"

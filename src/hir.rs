@@ -13,19 +13,20 @@ use crate::syntax;
 
 #[derive(Debug)]
 pub struct Module {
-    namespace: Namespace,
+    pub namespace: Namespace,
 }
 
 #[derive(Debug)]
 pub struct Namespace {
-    items: HashMap<Rc<str>, Item>,
+    pub items: HashMap<Rc<str>, Item>,
+    pub names: HashMap<Item, Rc<str>>,
 
-    types: HashMap<TypeId, Type>,
-    constants: HashMap<ConstId, Constant>,
-    signatures: HashMap<Identifier, Signature>,
+    pub types: HashMap<TypeId, Type>,
+    pub constants: HashMap<ConstId, Constant>,
+    pub signatures: HashMap<Identifier, Signature>,
 
-    next_type: TypeId,
-    next_const: ConstId,
+    pub next_type: TypeId,
+    pub next_const: ConstId,
 }
 
 #[derive(Debug)]
@@ -45,9 +46,9 @@ struct Scope<'a> {
 }
 
 #[derive(Debug, Clone)]
-struct Signature {
-    arguments: Vec<TypeId>,
-    result: TypeId,
+pub struct Signature {
+    pub arguments: Vec<TypeId>,
+    pub result: TypeId,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -66,7 +67,7 @@ pub struct ConstId(u32);
 pub struct LocalId(u32);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-struct PropertyId(u32);
+pub struct PropertyId(u32);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Identifier {
@@ -85,9 +86,9 @@ pub enum Type {
 
 #[derive(Debug)]
 pub struct Property {
-    name: Rc<str>,
-    id: PropertyId,
-    ty: TypeId,
+    pub name: Rc<str>,
+    pub id: PropertyId,
+    pub ty: TypeId,
 }
 
 #[derive(Debug)]
@@ -98,20 +99,20 @@ pub enum Constant {
 
 #[derive(Debug)]
 pub struct Function {
-    body: ExprBlock,
+    pub body: ExprBlock,
 }
 
 #[derive(Debug)]
 pub struct ExternFunction;
 
 #[derive(Debug)]
-struct Expr {
-    ty: TypeId,
-    kind: ExprKind,
+pub struct Expr {
+    pub ty: TypeId,
+    pub kind: ExprKind,
 }
 
 #[derive(Debug)]
-enum ExprKind {
+pub enum ExprKind {
     Block(ExprBlock),
     Invocation(ExprInvocation),
     Binding(ExprBinding),
@@ -122,38 +123,38 @@ enum ExprKind {
 }
 
 #[derive(Debug)]
-struct ExprBlock {
-    sequence: Vec<Expr>,
+pub struct ExprBlock {
+    pub sequence: Vec<Expr>,
 }
 
 #[derive(Debug)]
-struct ExprInvocation {
-    target: Identifier,
-    arguments: Vec<Expr>,
+pub struct ExprInvocation {
+    pub target: Identifier,
+    pub arguments: Vec<Expr>,
 }
 
 #[derive(Debug)]
-struct ExprBinding {
-    local: LocalId,
-    value: Box<Expr>,
+pub struct ExprBinding {
+    pub local: LocalId,
+    pub value: Box<Expr>,
 }
 
 #[derive(Debug)]
-struct ExprAccess {
-    base: Box<Expr>,
-    property: PropertyId,
+pub struct ExprAccess {
+    pub base: Box<Expr>,
+    pub property: PropertyId,
 }
 
 #[derive(Debug)]
-struct ExprConstructor {
-    base: TypeId,
-    initializers: Vec<ExprInitializer>,
+pub struct ExprConstructor {
+    pub base: TypeId,
+    pub initializers: Vec<ExprInitializer>,
 }
 
 #[derive(Debug)]
-struct ExprInitializer {
-    property: PropertyId,
-    value: Box<Expr>,
+pub struct ExprInitializer {
+    pub property: PropertyId,
+    pub value: Box<Expr>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,7 +165,7 @@ pub enum ExprLiteral {
 }
 
 #[derive(Debug, Clone)]
-pub struct ExprString(Rc<str>);
+pub struct ExprString(pub Rc<str>);
 
 #[derive(Debug, Clone)]
 pub enum ExprInteger {
@@ -230,6 +231,8 @@ impl Namespace {
     pub fn new() -> Namespace {
         Namespace {
             items: HashMap::new(),
+            names: HashMap::new(),
+
             next_type: TypeId(128),
             next_const: ConstId(128),
 
@@ -302,7 +305,10 @@ impl Namespace {
     pub fn insert(&mut self, ident: syntax::Ident, item: Item) -> Result<()> {
         match self.items.insert(ident.text.clone(), item) {
             Some(_) => Err(Error::DuplicateIdent { ident }),
-            None => Ok(()),
+            None => match self.names.insert(item, ident.text.clone()) {
+                Some(_) => Err(Error::DuplicateIdent { ident }),
+                None => Ok(()),
+            }
         }
     }
 
