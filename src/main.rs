@@ -6,6 +6,7 @@ mod linker;
 
 use std::fs;
 use std::path::PathBuf;
+use std::process;
 
 use structopt::StructOpt;
 
@@ -15,7 +16,17 @@ struct Options {
     source: PathBuf,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
+    match run() {
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
+        },
+        Ok(()) => (),
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let options = Options::from_args();
 
     let source = fs::read_to_string(&options.source)?;

@@ -1,7 +1,14 @@
 use super::*;
+
 use std::str::FromStr;
+use std::iter;
 
 impl Expr {
+    fn infer_type(kind: ExprKind, scope: &mut Scope) -> Result<Expr> {
+        let ty = kind.type_check(scope)?;
+        Ok(Expr { ty, kind })
+    }
+
     pub(super) fn lower(
         expr: &syntax::Expr,
         hint: Option<TypeId>,
@@ -21,7 +28,12 @@ impl Expr {
             }
             syntax::Expr::Ident(ident) => ExprKind::Ident(Self::lower_ident(ident, scope)?),
             syntax::Expr::Infix(infix) => Self::lower_infix(infix, scope)?,
-            _ => todo!("lower {:?}", expr),
+            syntax::Expr::Loop(endless) => ExprKind::Loop(Self::lower_loop(endless, hint, scope)?),
+            syntax::Expr::While(until) => Self::lower_while(until, scope)?,
+            syntax::Expr::ForLoop(for_loop) => todo!("lower for loop"),
+            syntax::Expr::Control(control) => ExprKind::Jump(Self::lower_control(control, scope)?),
+            syntax::Expr::If(branch) => ExprKind::Branch(Self::lower_if(branch, hint, scope)?),
+            syntax::Expr::Assign(assign) => ExprKind::Assign(Self::lower_assign(assign, scope)?),
         };
 
         Ok(kind)
@@ -32,7 +44,7 @@ impl Expr {
         hint: Option<TypeId>,
         scope: &mut Scope,
     ) -> Result<ExprBlock> {
-        let mut scope = scope.subscope();
+        let size = scope.items.len();
 
         let mut sequence = Vec::with_capacity(block.sequence.len());
         for (i, seq) in block.sequence.iter().enumerate() {
@@ -41,15 +53,58 @@ impl Expr {
 
             let expected = if is_last && !has_semi { hint } else { None };
 
-            let kind = Self::lower(&seq.expr, expected, &mut scope)?;
-            let ty = kind.type_check(&mut scope)?;
+            let kind = Self::lower(&seq.expr, expected, scope)?;
+            let ty = kind.type_check(scope)?;
 
             let ty = if has_semi { Namespace::TYPE_UNIT } else { ty };
 
-            sequence.push(Expr { ty, kind })
+            let is_jump = matches!(kind, ExprKind::Jump(_));
+
+            sequence.push(Expr { ty, kind });
+
+            if is_jump {
+                if !is_last {
+                    eprintln!("warning: unreachable expressions");
+                }
+
+                break;
+            }
         }
 
+        scope.items.truncate(size);
+
         Ok(ExprBlock { sequence })
+    }
+
+    fn lower_if(
+        branch: &syntax::ExprIf,
+        hint: Option<TypeId>,
+        scope: &mut Scope,
+    ) -> Result<ExprBranch> {
+        let condition = Self::lower(&branch.condition, Some(Namespace::TYPE_BOOL), scope)?;
+        let condition = Self::infer_type(condition, scope)?;
+
+        let success = Self::lower_block(&branch.block, hint, scope)?;
+        let success = Self::infer_type(ExprKind::Block(success), scope)?;
+
+        let failure = match &branch.else_branch {
+            None => {
+                let block = ExprBlock {
+                    sequence: Vec::new(),
+                };
+                Self::infer_type(ExprKind::Block(block), scope)?
+            }
+            Some(otherwise) => {
+                let failure = Self::lower(&otherwise.expr, hint, scope)?;
+                Self::infer_type(failure, scope)?
+            }
+        };
+
+        Ok(ExprBranch {
+            condition: Box::new(condition),
+            success: Box::new(success),
+            failure: Box::new(failure),
+        })
     }
 
     fn lower_call(call: &syntax::ExprCall, scope: &mut Scope) -> Result<ExprInvocation> {
@@ -62,9 +117,18 @@ impl Expr {
             .lookup_signature(target)
             .ok_or(Error::NotCallable { ident: target })?;
 
+        if !signature.sufficient_arguments(call.arguments.len()) {
+            return Err(Error::ArgumentCount {
+                expected: signature.arguments.len(),
+                found: call.arguments.len(),
+            });
+        }
+
         let mut arguments = Vec::with_capacity(call.arguments.len());
-        for (arg, &expected) in call.arguments.iter().zip(&signature.arguments) {
-            let kind = Self::lower(&arg, Some(expected), scope)?;
+        let arg_types = signature.arguments.iter().copied().map(Some).chain(iter::repeat(None));
+
+        for (arg, expected) in call.arguments.iter().zip(arg_types) {
+            let kind = Self::lower(&arg, expected, scope)?;
             let ty = kind.type_check(scope)?;
             arguments.push(Expr { ty, kind });
         }
@@ -114,11 +178,21 @@ impl Expr {
     fn lower_binding(binding: &syntax::ExprBinding, scope: &mut Scope) -> Result<ExprBinding> {
         let kind = Self::lower(&binding.value, None, scope)?;
         let ty = kind.type_check(scope)?;
-
         let value = Expr { ty, kind };
 
         Ok(ExprBinding {
-            local: scope.push_local(binding.ident.text.clone()),
+            mutable: binding.mut_token.is_some(),
+            local: scope.allocate_local(binding.ident.text.clone()),
+            value: Box::new(value),
+        })
+    }
+
+    fn lower_assign(assign: &syntax::ExprAssign, scope: &mut Scope) -> Result<ExprAssign> {
+        let kind = Self::lower(&assign.value, None, scope)?;
+        let value = Self::infer_type(kind, scope)?;
+
+        Ok(ExprAssign {
+            local: scope.lookup_local(&assign.ident.text)?,
             value: Box::new(value),
         })
     }
@@ -137,6 +211,7 @@ impl Expr {
         expected: Option<TypeId>,
     ) -> Result<ExprLiteral> {
         let literal = match literal {
+            syntax::ExprLiteral::Bool(boolean) => ExprLiteral::Bool(ExprBool(boolean.value)),
             syntax::ExprLiteral::String(string) => {
                 ExprLiteral::String(ExprString(string.value.clone()))
             }
@@ -180,7 +255,7 @@ impl Expr {
         Ok(literal)
     }
 
-    fn lower_infix(infix: &syntax::Infix, scope: &mut Scope) -> Result<ExprKind> {
+    fn lower_infix(infix: &syntax::ExprInfix, scope: &mut Scope) -> Result<ExprKind> {
         let kind = match infix.operator {
             syntax::BinaryOperator::Dot => Self::lower_operator_dot(&infix.lhs, &infix.rhs, scope)?,
             _ => todo!("lower operator: {:?}", infix.operator),
@@ -229,5 +304,60 @@ impl Expr {
             Type::Unit => Err(Error::AccessUnit),
             _ => Err(Error::ExpectedStruct),
         }
+    }
+
+    fn lower_loop(
+        endless: &syntax::ExprLoop,
+        _hint: Option<TypeId>,
+        scope: &mut Scope,
+    ) -> Result<ExprLoop> {
+        let label = scope.push_label();
+        let body = Self::lower_block(&endless.body, None, scope)?;
+        scope.pop_label();
+
+        let expr = Self::infer_type(ExprKind::Block(body), scope)?;
+        Ok(ExprLoop {
+            label,
+            expr: Box::new(expr),
+        })
+    }
+
+    fn lower_control(control: &syntax::ExprControl, scope: &mut Scope) -> Result<ExprJump> {
+        let label = scope.closest_label().ok_or(Error::NoEnclosingLabel)?;
+        Ok(ExprJump {
+            label,
+            kind: match control {
+                syntax::ExprControl::Break(_) => Jump::Break,
+                syntax::ExprControl::Continue(_) => Jump::Continue,
+            }
+        })
+    }
+
+    fn lower_while(until: &syntax::ExprWhile, scope: &mut Scope) -> Result<ExprKind> {
+        let condition = Self::lower(&until.condition, Some(Namespace::TYPE_BOOL), scope)?;
+        let condition = Self::infer_type(condition, scope)?;
+
+        let label = scope.push_label();
+        let body = Self::lower_block(&until.body, None, scope)?;
+        let body = Self::infer_type(ExprKind::Block(body), scope)?;
+        scope.pop_label();
+
+        let branch = ExprBranch {
+            condition: Box::new(condition),
+            success: Box::new(body),
+            failure: Box::new(Expr {
+                ty: Namespace::TYPE_UNIT,
+                kind: ExprKind::Jump(ExprJump {
+                    label,
+                    kind: Jump::Break,
+                }),
+            }),
+        };
+        let expr = Self::infer_type(ExprKind::Branch(branch), scope)?;
+
+        Ok(ExprKind::Loop(ExprLoop {
+            label,
+            expr: Box::new(expr),
+        }))
     }
 }

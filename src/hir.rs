@@ -1,7 +1,6 @@
 mod lowering;
 mod type_check;
 
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::rc::Rc;
@@ -40,15 +39,27 @@ struct Allocation<'a> {
 struct Scope<'a> {
     namespace: &'a Namespace,
     parent: Option<&'a Scope<'a>>,
-    items: HashMap<Rc<str>, Identifier>,
-    next_local: Rc<Cell<LocalId>>,
-    locals: HashMap<LocalId, TypeId>,
+
+    items: Vec<(Rc<str>, Identifier)>,
+
+    next_local: LocalId,
+    locals: HashMap<LocalId, Local>,
+
+    next_label: LabelId,
+    labels: Vec<LabelId>,
+}
+
+#[derive(Debug)]
+pub struct Local {
+    ty: TypeId,
+    mutable: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct Signature {
     pub arguments: Vec<TypeId>,
     pub result: TypeId,
+    pub variadic: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -58,16 +69,19 @@ pub enum Item {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct TypeId(u32);
+pub struct TypeId(pub u32);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct ConstId(u32);
+pub struct ConstId(pub u32);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct LocalId(u32);
+pub struct LocalId(pub u32);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct PropertyId(u32);
+pub struct PropertyId(pub u32);
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct LabelId(pub u32);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Identifier {
@@ -100,6 +114,7 @@ pub enum Constant {
 #[derive(Debug)]
 pub struct Function {
     pub body: ExprBlock,
+    pub locals: HashMap<LocalId, Local>,
 }
 
 #[derive(Debug)]
@@ -116,15 +131,44 @@ pub enum ExprKind {
     Block(ExprBlock),
     Invocation(ExprInvocation),
     Binding(ExprBinding),
+    Assign(ExprAssign),
     Ident(Identifier),
     Access(ExprAccess),
     Constructor(ExprConstructor),
     Literal(ExprLiteral),
+    Branch(ExprBranch),
+    Loop(ExprLoop),
+    Jump(ExprJump),
+}
+
+#[derive(Debug)]
+pub struct ExprLoop {
+    pub label: LabelId,
+    pub expr: Box<Expr>,
+}
+
+#[derive(Debug)]
+pub struct ExprJump {
+    pub label: LabelId,
+    pub kind: Jump,
+}
+
+#[derive(Debug)]
+pub enum Jump {
+    Break,
+    Continue,
 }
 
 #[derive(Debug)]
 pub struct ExprBlock {
     pub sequence: Vec<Expr>,
+}
+
+#[derive(Debug)]
+pub struct ExprBranch {
+    pub condition: Box<Expr>,
+    pub success: Box<Expr>,
+    pub failure: Box<Expr>,
 }
 
 #[derive(Debug)]
@@ -134,7 +178,26 @@ pub struct ExprInvocation {
 }
 
 #[derive(Debug)]
+pub enum Callable {
+    Identifier(Identifier),
+    Intrinsic(Intrinsic),
+}
+
+#[derive(Debug)]
+pub enum Intrinsic {
+    SignedIntegerAdd,
+    UnsignedIntegerAdd,
+}
+
+#[derive(Debug)]
 pub struct ExprBinding {
+    pub mutable: bool,
+    pub local: LocalId,
+    pub value: Box<Expr>,
+}
+
+#[derive(Debug)]
+pub struct ExprAssign {
     pub local: LocalId,
     pub value: Box<Expr>,
 }
@@ -159,10 +222,14 @@ pub struct ExprInitializer {
 
 #[derive(Debug, Clone)]
 pub enum ExprLiteral {
+    Bool(ExprBool),
     String(ExprString),
     Integer(ExprInteger),
     Float(ExprFloat),
 }
+
+#[derive(Debug, Clone)]
+pub struct ExprBool(pub bool);
 
 #[derive(Debug, Clone)]
 pub struct ExprString(pub Rc<str>);
@@ -194,6 +261,8 @@ pub enum Error {
     ItemNotFound { ident: String },
     #[error("expected a type")]
     ExpectedType,
+    #[error("expected a locally bound variable")]
+    ExpectedLocal,
 
     #[error("type not allowed on argument")]
     InvalidArgumentType,
@@ -214,6 +283,11 @@ pub enum Error {
 
     #[error("attempted to call a non-callable type {ident:?}")]
     NotCallable { ident: Identifier },
+    #[error("attempted to assign to a non-mutable local variable")]
+    NotMutable { local: LocalId },
+
+    #[error("variadic arguments only allowed on `extern` functions")]
+    DisallowedVariadic,
 
     #[error("undefined field `{ident}`")]
     UndefinedField { ident: String },
@@ -223,6 +297,12 @@ pub enum Error {
 
     #[error("integer out of range")]
     OutOfRange,
+
+    #[error("argument count mismatch: expected {expected}, found {found}")]
+    ArgumentCount { expected: usize, found: usize },
+
+    #[error("no enclosing label in scope")]
+    NoEnclosingLabel,
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -269,6 +349,7 @@ impl Namespace {
         types.insert(Self::TYPE_F32, Type::Primitive(Primitive::F32));
         types.insert(Self::TYPE_F64, Type::Primitive(Primitive::F64));
         types.insert(Self::TYPE_STR, Type::Primitive(Primitive::Str));
+        types.insert(Self::TYPE_BOOL, Type::Primitive(Primitive::Bool));
 
         types
     }
@@ -285,6 +366,7 @@ impl Namespace {
     const TYPE_F32: TypeId = TypeId(9);
     const TYPE_F64: TypeId = TypeId(10);
     const TYPE_STR: TypeId = TypeId(11);
+    const TYPE_BOOL: TypeId = TypeId(12);
 
     pub fn primitive_type(primitive: Primitive) -> TypeId {
         match primitive {
@@ -299,6 +381,7 @@ impl Namespace {
             Primitive::F32 => Self::TYPE_F32,
             Primitive::F64 => Self::TYPE_F64,
             Primitive::Str => Self::TYPE_STR,
+            Primitive::Bool => Self::TYPE_BOOL,
         }
     }
 
@@ -308,7 +391,7 @@ impl Namespace {
             None => match self.names.insert(item, ident.text.clone()) {
                 Some(_) => Err(Error::DuplicateIdent { ident }),
                 None => Ok(()),
-            }
+            },
         }
     }
 
@@ -336,32 +419,44 @@ impl<'a> Scope<'a> {
         Scope {
             namespace,
             parent: None,
-            items: HashMap::new(),
-            next_local: Rc::new(Cell::new(LocalId(0))),
+            items: Vec::new(),
+            next_local: LocalId(0),
             locals: HashMap::new(),
+            next_label: LabelId(0),
+            labels: Vec::new(),
         }
     }
 
-    fn subscope(&'a self) -> Scope<'a> {
-        Scope {
-            namespace: self.namespace,
-            parent: Some(self),
-            items: HashMap::new(),
-            next_local: self.next_local.clone(),
-            locals: HashMap::new(),
-        }
-    }
-
-    fn push_local(&mut self, ident: impl Into<Rc<str>>) -> LocalId {
-        let id = self.next_local.get();
-        self.next_local.set(LocalId(id.0 + 1));
-        self.items.insert(ident.into(), Identifier::Local(id));
+    fn allocate_local(&mut self, ident: impl Into<Rc<str>>) -> LocalId {
+        let id = self.next_local;
+        self.next_local.0 += 1;
+        self.items.push((ident.into(), Identifier::Local(id)));
         id
     }
 
+    fn push_label(&mut self) -> LabelId {
+        let id = self.next_label;
+        self.next_label.0 += 1;
+        self.labels.push(id);
+        id
+    }
+
+    fn pop_label(&mut self) {
+        self.labels.pop().expect("label stack empty");
+    }
+
+    fn closest_label(&self) -> Option<LabelId> {
+        self.labels.last().copied()
+    }
+
     fn lookup(&self, name: &str) -> Option<Identifier> {
-        match self.items.get(name) {
-            Some(item) => Some(*item),
+        match self
+            .items
+            .iter()
+            .rev()
+            .find(|(ident, _)| ident.as_ref() == name)
+        {
+            Some((_, item)) => Some(*item),
             None => match self.parent {
                 Some(parent) => parent.lookup(name),
                 None => self.namespace.lookup(name).map(Identifier::Global),
@@ -374,6 +469,14 @@ impl<'a> Scope<'a> {
             Some(Identifier::Global(Item::Type(ty))) => Ok(ty),
             None => Err(Error::ItemNotFound { ident: name.into() }),
             Some(_) => Err(Error::ExpectedType),
+        }
+    }
+
+    pub fn lookup_local(&self, name: &str) -> Result<LocalId> {
+        match self.lookup(name) {
+            Some(Identifier::Local(local)) => Ok(local),
+            None => Err(Error::ItemNotFound { ident: name.into() }),
+            Some(_) => Err(Error::ExpectedLocal),
         }
     }
 
@@ -481,6 +584,9 @@ impl Module {
         for (id, function) in &allocation.functions {
             let ident = Identifier::Global(Item::Const(*id));
             let signature = self.namespace.signatures.get(&ident).unwrap();
+            if signature.variadic {
+                return Err(Error::DisallowedVariadic);
+            }
             let function = Function::from_syntax(function, signature, &self.namespace)?;
             self.namespace.insert_constant(*id, function);
         }
@@ -559,9 +665,30 @@ impl Function {
         namespace: &Namespace,
     ) -> Result<Function> {
         let mut scope = Scope::new(namespace);
-        let body = Expr::lower_block(&function.body, Some(signature.result), &mut scope)?;
 
-        Ok(Function { body })
+        for (arg, ty) in function
+            .signature
+            .arguments
+            .iter()
+            .zip(&signature.arguments)
+        {
+            let local = scope.allocate_local(arg.ident.text.clone());
+            scope.locals.insert(
+                local,
+                Local {
+                    ty: *ty,
+                    mutable: false,
+                },
+            );
+        }
+
+        let body = Expr::lower_block(&function.body, Some(signature.result), &mut scope)?;
+        body.type_check()?.expect(signature.result)?;
+
+        Ok(Function {
+            body,
+            locals: scope.locals,
+        })
     }
 }
 
@@ -587,7 +714,13 @@ impl Signature {
                 .ok_or(Error::InvalidReturnType)?,
         };
 
-        Ok(Signature { arguments, result })
+        let variadic = signature.ellipses.is_some();
+
+        Ok(Signature {
+            arguments,
+            result,
+            variadic,
+        })
     }
 
     fn from_type(ty: TypeId, namespace: &Namespace) -> Option<Signature> {
@@ -595,17 +728,28 @@ impl Signature {
             Type::Unit => Some(Signature {
                 arguments: vec![Namespace::TYPE_UNIT],
                 result: ty,
+                variadic: false,
             }),
             Type::Alias(alias) => Some(Signature {
                 arguments: vec![*alias],
                 result: ty,
+                variadic: false,
             }),
             Type::Primitive(primitive) => Some(Signature {
                 arguments: vec![Namespace::primitive_type(*primitive)],
                 result: ty,
+                variadic: false,
             }),
             Type::Struct { .. } => None,
             Type::Enum { .. } => None,
+        }
+    }
+
+    fn sufficient_arguments(&self, count: usize) -> bool {
+        if self.variadic {
+            self.arguments.len() <= count
+        } else {
+            self.arguments.len() == count
         }
     }
 }

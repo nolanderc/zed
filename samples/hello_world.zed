@@ -1,8 +1,45 @@
-const puts = extern fn (text str);
+const printf = extern fn (text str, ...);
 
-const main = fn () {
-    puts("Hello, world!");
-    puts("This is my very own programming language.");
-    puts("And it is amazing!!!");
+const print = fn (text str) {
+    printf("Message: %s\n", text);
+}
+
+const not = fn (value bool) -> bool {
+    if value { false } else { true }
+}
+
+const main = fn () -> i32 {
+    let message = "Bye bye.";
+
+    print({ 
+        let message = "Creating greeting...";
+        print(message);
+        "Hello, world!"
+    });
+
+    print("This is my very own programming language.");
+    print("And it is amazing!!!");
+
+    let mut text = "";
+    let mut condition = true;
+    condition = false;
+    if condition {
+        text = "super secret message";
+    } else {
+        text = "nothing to see here";
+    };
+
+    let mut zero = false;
+    let mut one = false;
+    let mut two = false;
+
+    while not(zero) {
+        printf("WOW!\n");
+        zero = one;
+        one = two;
+        two = true;
+    }
+
+    14
 }
 

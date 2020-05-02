@@ -58,23 +58,91 @@ pub enum Expr {
     Call(Box<ExprCall>),
     Binding(Box<ExprBinding>),
     Literal(Box<ExprLiteral>),
+    Loop(Box<ExprLoop>),
+    While(Box<ExprWhile>),
     ForLoop(Box<ExprFor>),
     Constructor(Box<ExprConstructor>),
-    Ident(Ident),
-    Infix(Infix),
+    Ident(Box<Ident>),
+    Infix(Box<ExprInfix>),
+    If(Box<ExprIf>),
+    Assign(Box<ExprAssign>),
+    Control(Box<ExprControl>),
 }
 
 #[derive(Debug, Clone)]
-pub struct Infix {
-    pub operator: BinaryOperator,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+pub enum ExprControl {
+    Break(ExprBreak),
+    Continue(ExprContinue),
 }
 
-#[derive(Debug, Copy, Clone)]
-pub enum BinaryOperator {
-    Dot,
-    Range,
+#[derive(Debug, Clone)]
+pub struct ExprBreak {
+    pub break_token: Token,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExprContinue {
+    pub continue_token: Token,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExprAssign {
+    pub ident: Ident,
+    pub eq_token: Token,
+    pub value: Expr,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExprIf {
+    pub if_token: Token,
+    pub condition: Expr,
+    pub block: ExprBlock,
+    pub else_branch: Option<ExprElse>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExprElse {
+    pub else_token: Token,
+    pub expr: Expr,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExprInfix {
+    pub operator: BinaryOperator,
+    pub lhs: Expr,
+    pub rhs: Expr,
+}
+
+macro_rules! binary_operators {
+    (
+        $vis:vis enum $ident:ident {
+            $(
+                $op:ident ($precedence:literal) = $symbol:expr,
+            )*
+        }
+    ) => {
+        #[derive(Debug, Copy, Clone)]
+        pub enum $ident {
+            $($op),*
+        }
+
+        impl $ident {
+            fn parse(input: Input) -> PResult<BinaryOperator> {
+                alt((
+                        $(
+                            map(symbol($symbol), |_| $ident::$op),
+                        )*
+                ))(input)
+            }
+        }
+    }
+}
+
+binary_operators! {
+    pub enum BinaryOperator {
+        Dot (2) = '.',
+        Range (1) = Symbol::Range,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -103,16 +171,24 @@ pub struct ExprCall {
 #[derive(Debug, Clone)]
 pub struct ExprBinding {
     pub let_token: Token,
+    pub mut_token: Option<Token>,
     pub ident: Ident,
     pub eq_token: Token,
-    pub value: Rc<Expr>,
+    pub value: Expr,
 }
 
 #[derive(Debug, Clone)]
 pub enum ExprLiteral {
+    Bool(ExprBool),
     String(ExprString),
     Integer(ExprInteger),
     Float(ExprFloat),
+}
+
+#[derive(Debug, Clone)]
+pub struct ExprBool {
+    pub token: Token,
+    pub value: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -157,8 +233,21 @@ pub struct ExprFor {
     pub for_token: Token,
     pub ident: Ident,
     pub in_token: Token,
-    pub range: Box<Expr>,
-    pub body: Box<ExprBlock>,
+    pub range: Expr,
+    pub body: ExprBlock,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExprLoop {
+    pub loop_token: Token,
+    pub body: ExprBlock,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExprWhile {
+    pub while_token: Token,
+    pub condition: Expr,
+    pub body: ExprBlock,
 }
 
 #[derive(Debug, Clone)]
@@ -174,7 +263,7 @@ pub struct Initializer {
     pub dot_token: Token,
     pub ident: Ident,
     pub eq_token: Token,
-    pub value: Box<Expr>,
+    pub value: Expr,
 }
 
 #[derive(Debug, Clone)]
@@ -252,6 +341,7 @@ pub struct ExternFunction {
 pub struct Signature {
     pub open_parens: Token,
     pub arguments: Fields,
+    pub ellipses: Option<Token>,
     pub close_parens: Token,
     pub return_clause: Option<ReturnClause>,
 }
@@ -497,11 +587,20 @@ fn function(input: Input) -> PResult<Function> {
 }
 
 fn function_signature(input: Input) -> PResult<Signature> {
+    let fields = separated_list(symbol(','), field);
+
     map(
-        tuple((symbol('('), fields, symbol(')'), opt(return_clause))),
-        |(open_parens, arguments, close_parens, return_clause)| Signature {
+        tuple((
+            symbol('('),
+            fields,
+            opt(preceded(symbol(','), opt(symbol(Symbol::Ellipses)))),
+            symbol(')'),
+            opt(return_clause),
+        )),
+        |(open_parens, arguments, ellipses, close_parens, return_clause)| Signature {
             open_parens,
             arguments,
+            ellipses: ellipses.flatten(),
             close_parens,
             return_clause,
         },
@@ -523,12 +622,21 @@ fn expr_statement(input: Input) -> PResult<Expr> {
         map(context("for loop", expr_for_loop), |e| {
             Expr::ForLoop(e.into())
         }),
+        map(context("while loop", expr_while), |e| Expr::While(e.into())),
+        map(context("assignment", expr_assign), |e| {
+            Expr::Assign(e.into())
+        }),
         expr_inline,
     ))(input)
 }
 
 fn expr_primary(input: Input) -> PResult<Expr> {
     alt((
+        map(context("endless loop", expr_loop), |e| Expr::Loop(e.into())),
+        map(context("control flow", expr_control), |e| {
+            Expr::Control(e.into())
+        }),
+        map(context("if", expr_if), |e| Expr::If(e.into())),
         map(context("block", expr_block), |e| Expr::Block(e.into())),
         map(context("function call", expr_call), |e| {
             Expr::Call(e.into())
@@ -539,7 +647,7 @@ fn expr_primary(input: Input) -> PResult<Expr> {
         map(context("constructor", expr_constructor), |e| {
             Expr::Constructor(e.into())
         }),
-        map(context("ident", ident), Expr::Ident),
+        map(context("ident", ident), |e| Expr::Ident(e.into())),
     ))(input)
 }
 
@@ -550,7 +658,7 @@ fn expr_inline(input: Input) -> PResult<Expr> {
 
 fn expr_infix(mut lhs: Expr, min_precedence: u32) -> impl FnOnce(Input) -> PResult<Expr> {
     move |mut input| {
-        while let (rest, Some(operator)) = opt(binary_operator)(input)? {
+        while let (rest, Some(operator)) = opt(BinaryOperator::parse)(input)? {
             if operator.precedence() < min_precedence {
                 break;
             }
@@ -558,7 +666,7 @@ fn expr_infix(mut lhs: Expr, min_precedence: u32) -> impl FnOnce(Input) -> PResu
             let (rest, mut rhs) = expr_primary(rest)?;
             input = rest;
 
-            while let (rest, Some(next_operator)) = opt(binary_operator)(input)? {
+            while let (rest, Some(next_operator)) = opt(BinaryOperator::parse)(input)? {
                 if next_operator.precedence() > operator.precedence() {
                     let (rest, next) = expr_infix(rhs, next_operator.precedence())(rest)?;
                     input = rest;
@@ -569,11 +677,7 @@ fn expr_infix(mut lhs: Expr, min_precedence: u32) -> impl FnOnce(Input) -> PResu
             }
 
             input = rest;
-            lhs = Expr::Infix(Infix {
-                operator,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            });
+            lhs = Expr::Infix(Box::new(ExprInfix { operator, lhs, rhs }));
         }
 
         Ok((input, lhs))
@@ -589,11 +693,32 @@ impl BinaryOperator {
     }
 }
 
-fn binary_operator(input: Input) -> PResult<BinaryOperator> {
-    alt((
-        map(symbol('.'), |_| BinaryOperator::Dot),
-        map(symbol(Symbol::Range), |_| BinaryOperator::Range),
-    ))(input)
+fn expr_if(input: Input) -> PResult<ExprIf> {
+    map(
+        tuple((
+            keyword(Keyword::If),
+            cut(tuple((expr_inline, expr_block, opt(expr_else)))),
+        )),
+        |(if_token, (condition, block, else_branch))| ExprIf {
+            if_token,
+            condition,
+            block,
+            else_branch,
+        },
+    )(input)
+}
+
+fn expr_else(input: Input) -> PResult<ExprElse> {
+    map(
+        tuple((
+            keyword(Keyword::Else),
+            cut(alt((
+                map(expr_if, |e| Expr::If(e.into())),
+                map(expr_block, |e| Expr::Block(e.into())),
+            ))),
+        )),
+        |(else_token, expr)| ExprElse { else_token, expr },
+    )(input)
 }
 
 fn expr_block(input: Input) -> PResult<ExprBlock> {
@@ -612,16 +737,19 @@ fn expr_block(input: Input) -> PResult<ExprBlock> {
 
         let (rest, semi_token) = match expr {
             // semicolon fully optional
-            Expr::Block(_) | Expr::ForLoop(_) => opt(symbol(';'))(tokens)?,
+            Expr::Block(_) | Expr::If(_) | Expr::Loop(_) | Expr::ForLoop(_) | Expr::While(_) => {
+                opt(symbol(';'))(tokens)?
+            }
 
             // semicolon always required
-            Expr::Binding(_) => map(symbol(';'), Some)(tokens)?,
+            Expr::Binding(_) | Expr::Assign(_) => map(symbol(';'), Some)(tokens)?,
 
             // semicolon required if not final expression
             Expr::Infix(_)
             | Expr::Ident(_)
             | Expr::Constructor(_)
             | Expr::Literal(_)
+            | Expr::Control(_)
             | Expr::Call(_) => match symbol(';')(tokens) {
                 Ok((rest, semi_token)) => (rest, Some(semi_token)),
                 Err(_) => {
@@ -672,15 +800,69 @@ fn expr_binding(input: Input) -> PResult<ExprBinding> {
     map(
         tuple((
             keyword(Keyword::Let),
-            cut(tuple((ident, symbol('='), expr_inline))),
+            cut(tuple((
+                opt(keyword(Keyword::Mut)),
+                ident,
+                symbol('='),
+                expr_inline,
+            ))),
         )),
-        |(let_token, (ident, eq_token, value))| ExprBinding {
+        |(let_token, (mut_token, ident, eq_token, value))| ExprBinding {
             let_token,
+            mut_token,
             ident,
             eq_token,
-            value: Rc::new(value),
+            value,
         },
     )(input)
+}
+
+fn expr_assign(input: Input) -> PResult<ExprAssign> {
+    map(
+        tuple((ident, symbol('='), cut(expr_inline))),
+        |(ident, eq_token, value)| ExprAssign {
+            ident,
+            eq_token,
+            value,
+        },
+    )(input)
+}
+
+fn expr_loop(input: Input) -> PResult<ExprLoop> {
+    map(
+        tuple((keyword(Keyword::Loop), cut(expr_block))),
+        |(loop_token, body)| ExprLoop { loop_token, body },
+    )(input)
+}
+
+fn expr_while(input: Input) -> PResult<ExprWhile> {
+    map(
+        tuple((keyword(Keyword::While), cut(pair(expr_inline, expr_block)))),
+        |(while_token, (condition, body))| ExprWhile {
+            while_token,
+            condition,
+            body,
+        },
+    )(input)
+}
+
+fn expr_control(input: Input) -> PResult<ExprControl> {
+    alt((
+        map(expr_break, ExprControl::Break),
+        map(expr_continue, ExprControl::Continue),
+    ))(input)
+}
+
+fn expr_break(input: Input) -> PResult<ExprBreak> {
+    map(keyword(Keyword::Break), |break_token| ExprBreak {
+        break_token,
+    })(input)
+}
+
+fn expr_continue(input: Input) -> PResult<ExprContinue> {
+    map(keyword(Keyword::Continue), |continue_token| ExprContinue {
+        continue_token,
+    })(input)
 }
 
 fn expr_for_loop(input: Input) -> PResult<ExprFor> {
@@ -698,8 +880,8 @@ fn expr_for_loop(input: Input) -> PResult<ExprFor> {
             for_token,
             ident,
             in_token,
-            range: Box::new(range),
-            body: Box::new(body),
+            range,
+            body,
         },
     )(input)
 }
@@ -718,9 +900,23 @@ fn expr_constructor(input: Input) -> PResult<ExprConstructor> {
 
 fn expr_literal(input: Input) -> PResult<ExprLiteral> {
     alt((
+        map(expr_bool, ExprLiteral::Bool),
         map(expr_string, ExprLiteral::String),
         map(expr_integer, ExprLiteral::Integer),
         map(expr_float, ExprLiteral::Float),
+    ))(input)
+}
+
+fn expr_bool(input: Input) -> PResult<ExprBool> {
+    alt((
+        map(keyword(Keyword::False), |token| ExprBool {
+            token,
+            value: false,
+        }),
+        map(keyword(Keyword::True), |token| ExprBool {
+            token,
+            value: true,
+        }),
     ))(input)
 }
 
@@ -892,7 +1088,7 @@ fn initializer(input: Input) -> PResult<Initializer> {
             dot_token,
             ident,
             eq_token,
-            value: Box::new(value),
+            value,
         },
     )(input)
 }

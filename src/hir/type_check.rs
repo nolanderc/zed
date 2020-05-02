@@ -3,7 +3,7 @@ use super::*;
 impl<'a> Scope<'a> {
     pub(super) fn type_of(&self, ident: Identifier) -> TypeId {
         match ident {
-            Identifier::Local(local) => *self.locals.get(&local).unwrap(),
+            Identifier::Local(local) => self.locals.get(&local).map(|local| local.ty).unwrap(),
             Identifier::Global(Item::Type(ty)) => ty,
             Identifier::Global(Item::Const(constant)) => {
                 todo!("get type of constant: {:?}", constant)
@@ -27,7 +27,7 @@ impl TypeId {
 
 impl ExprKind {
     pub(super) fn type_check(&self, scope: &mut Scope) -> Result<TypeId> {
-        let ty = match &self {
+        let ty = match self {
             ExprKind::Block(block) => block.type_check()?,
             ExprKind::Ident(ident) => scope.type_of(*ident),
             ExprKind::Binding(binding) => binding.type_check(scope),
@@ -35,6 +35,10 @@ impl ExprKind {
             ExprKind::Access(access) => access.type_check(scope)?,
             ExprKind::Literal(literal) => literal.type_check(),
             ExprKind::Constructor(constructor) => constructor.type_check(scope)?,
+            ExprKind::Branch(branch) => branch.type_check()?,
+            ExprKind::Assign(assign) => assign.type_check(scope)?,
+            ExprKind::Loop(endless) => endless.type_check()?,
+            ExprKind::Jump(jump) => jump.type_check()?,
         };
 
         Ok(ty)
@@ -57,8 +61,28 @@ impl ExprBlock {
 impl ExprBinding {
     pub(super) fn type_check(&self, scope: &mut Scope) -> TypeId {
         let ty = self.value.ty;
-        scope.locals.insert(self.local, ty);
+
+        let local = Local {
+            ty,
+            mutable: self.mutable,
+        };
+
+        scope.locals.insert(self.local, local);
         Namespace::TYPE_UNIT
+    }
+}
+
+impl ExprAssign {
+    pub(super) fn type_check(&self, scope: &mut Scope) -> Result<TypeId> {
+        let ty = self.value.ty;
+        let local = scope.locals.get(&self.local).unwrap();
+
+        if !local.mutable {
+            Err(Error::NotMutable { local: self.local })
+        } else {
+            ty.expect(local.ty)?;
+            Ok(ty)
+        }
     }
 }
 
@@ -124,6 +148,7 @@ impl ExprAccess {
 impl ExprLiteral {
     pub(super) fn type_check(&self) -> TypeId {
         match self {
+            ExprLiteral::Bool(_) => Namespace::TYPE_BOOL,
             ExprLiteral::String(_) => Namespace::TYPE_STR,
             ExprLiteral::Integer(ExprInteger::U8(_)) => Namespace::TYPE_U8,
             ExprLiteral::Integer(ExprInteger::U16(_)) => Namespace::TYPE_U16,
@@ -136,5 +161,27 @@ impl ExprLiteral {
             ExprLiteral::Float(ExprFloat::F32(_)) => Namespace::TYPE_F32,
             ExprLiteral::Float(ExprFloat::F64(_)) => Namespace::TYPE_F64,
         }
+    }
+}
+
+impl ExprBranch {
+    pub(super) fn type_check(&self) -> Result<TypeId> {
+        self.condition.ty.expect(Namespace::TYPE_BOOL)?;
+        let ty = self.success.ty;
+        self.failure.ty.expect(ty)?;
+        Ok(ty)
+    }
+}
+
+impl ExprLoop {
+    pub(super) fn type_check(&self) -> Result<TypeId> {
+        self.expr.ty.expect(Namespace::TYPE_UNIT)?;
+        Ok(Namespace::TYPE_UNIT)
+    }
+}
+
+impl ExprJump {
+    pub(super) fn type_check(&self) -> Result<TypeId> {
+        Ok(Namespace::TYPE_UNIT)
     }
 }

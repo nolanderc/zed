@@ -5,7 +5,7 @@ use nom::branch::*;
 use nom::bytes::complete::*;
 use nom::character::complete::*;
 use nom::combinator::*;
-use nom::error::context;
+use nom::multi::*;
 use nom::sequence::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,8 +42,21 @@ pub enum Keyword {
     Type,
     Const,
     Let,
+    Mut,
+
+    Loop,
+    While,
     For,
     In,
+
+    Break,
+    Continue,
+
+    If,
+    Else,
+
+    True,
+    False,
 
     Primitive(Primitive),
 }
@@ -61,12 +74,14 @@ pub enum Primitive {
     F32,
     F64,
     Str,
+    Bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Symbol {
     Char(char),
 
+    Ellipses,
     Range,
     ThinArrow,
 }
@@ -137,8 +152,17 @@ fn keyword(input: &str) -> PResult<Keyword> {
         map(tag("const"), |_| Keyword::Const),
         map(tag("type"), |_| Keyword::Type),
         map(tag("let"), |_| Keyword::Let),
+        map(tag("mut"), |_| Keyword::Mut),
+        map(tag("loop"), |_| Keyword::Loop),
+        map(tag("while"), |_| Keyword::While),
         map(tag("for"), |_| Keyword::For),
         map(tag("in"), |_| Keyword::In),
+        map(tag("break"), |_| Keyword::Break),
+        map(tag("continue"), |_| Keyword::Continue),
+        map(tag("if"), |_| Keyword::If),
+        map(tag("else"), |_| Keyword::Else),
+        map(tag("true"), |_| Keyword::True),
+        map(tag("false"), |_| Keyword::False),
         map(primitive, Keyword::Primitive),
     ))(input)
 }
@@ -156,6 +180,7 @@ fn primitive(input: &str) -> PResult<Primitive> {
         map(tag("f32"), |_| Primitive::F32),
         map(tag("f64"), |_| Primitive::F64),
         map(tag("str"), |_| Primitive::Str),
+        map(tag("bool"), |_| Primitive::Bool),
     ))(input)
 }
 
@@ -168,9 +193,11 @@ fn literal(input: &str) -> PResult<Literal> {
 }
 
 fn string(input: &str) -> PResult<&str> {
-    let contents = escaped(is_not("\"\\"), '\\', one_of("\"\\nrta"));
-    let pattern = tuple((char('"'), contents, char('"')));
-    recognize(pattern)(input)
+    let content = recognize(many0(alt((
+        recognize(none_of("\"\\")),
+        recognize(pair(char('\\'), anychar)),
+    ))));
+    recognize(tuple((char('"'), content, char('"'))))(input)
 }
 
 fn float(input: &str) -> PResult<&str> {
@@ -192,11 +219,9 @@ fn identifier(input: &str) -> PResult<&str> {
 fn symbol(input: &str) -> PResult<Symbol> {
     alt((
         map(tag("->"), |_| Symbol::ThinArrow),
+        map(tag("..."), |_| Symbol::Ellipses),
         map(tag(".."), |_| Symbol::Range),
-        map(
-            context("unexpected character", cut(one_of("(){}[]=.,;"))),
-            Symbol::Char,
-        ),
+        map(anychar, Symbol::Char),
     ))(input)
 }
 
@@ -221,6 +246,7 @@ impl Display for Symbol {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Symbol::Char(ch) => write!(f, "`{}`", ch),
+            Symbol::Ellipses => "`...`".fmt(f),
             Symbol::Range => "`..`".fmt(f),
             Symbol::ThinArrow => "`->`".fmt(f),
         }
@@ -240,8 +266,21 @@ impl Display for Keyword {
             Keyword::Type => "`type`".fmt(f),
             Keyword::Const => "`const`".fmt(f),
             Keyword::Let => "`let`".fmt(f),
+            Keyword::Mut => "`mut`".fmt(f),
+
+            Keyword::Loop => "`loop`".fmt(f),
+            Keyword::While => "`while`".fmt(f),
             Keyword::For => "`for`".fmt(f),
             Keyword::In => "`in`".fmt(f),
+
+            Keyword::Break => "`break`".fmt(f),
+            Keyword::Continue => "`continue`".fmt(f),
+
+            Keyword::If => "`if`".fmt(f),
+            Keyword::Else => "`else`".fmt(f),
+
+            Keyword::True => "`true`".fmt(f),
+            Keyword::False => "`false`".fmt(f),
 
             Keyword::Primitive(primitive) => Display::fmt(primitive, f),
         }
@@ -262,6 +301,7 @@ impl Primitive {
             Primitive::F32 => "f32",
             Primitive::F64 => "f64",
             Primitive::Str => "str",
+            Primitive::Bool => "bool",
         }
     }
 }
