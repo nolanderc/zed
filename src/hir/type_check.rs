@@ -39,6 +39,8 @@ impl ExprKind {
             ExprKind::Assign(assign) => assign.type_check(scope)?,
             ExprKind::Loop(endless) => endless.type_check()?,
             ExprKind::Jump(jump) => jump.type_check()?,
+            ExprKind::Return(ret) => ret.type_check(scope)?,
+            ExprKind::Intrinsic(intrinsic) => intrinsic.type_check()?,
         };
 
         Ok(ty)
@@ -183,5 +185,41 @@ impl ExprLoop {
 impl ExprJump {
     pub(super) fn type_check(&self) -> Result<TypeId> {
         Ok(Namespace::TYPE_UNIT)
+    }
+}
+
+impl ExprReturn {
+    pub(super) fn type_check(&self, scope: &mut Scope) -> Result<TypeId> {
+        self.value
+            .as_ref()
+            .map(|v| v.ty)
+            .unwrap_or(Namespace::TYPE_UNIT)
+            .expect(scope.signature.result)?;
+        Ok(Namespace::TYPE_UNIT)
+    }
+}
+
+impl Intrinsic {
+    fn type_check(&self) -> Result<TypeId> {
+        match self {
+            Intrinsic::Add(lhs, rhs) => Self::expect_binary(lhs, rhs, TypeId::is_numeric),
+            Intrinsic::Sub(lhs, rhs) => Self::expect_binary(lhs, rhs, TypeId::is_numeric),
+            Intrinsic::Mul(lhs, rhs) => Self::expect_binary(lhs, rhs, TypeId::is_numeric),
+            Intrinsic::Div(_, lhs, rhs) => Self::expect_binary(lhs, rhs, TypeId::is_numeric),
+            Intrinsic::Mod(_, lhs, rhs) => Self::expect_binary(lhs, rhs, TypeId::is_integer),
+
+            Intrinsic::Compare(_, _, lhs, rhs) => {
+                Self::expect_binary(lhs, rhs, TypeId::is_numeric)?;
+                Ok(Namespace::TYPE_BOOL)
+            }
+        }
+    }
+
+    fn expect_binary(lhs: &Expr, rhs: &Expr, predicate: impl Fn(TypeId) -> bool) -> Result<TypeId> {
+        if !predicate(lhs.ty) {
+            return Err(Error::NumericRequired);
+        }
+        rhs.ty.expect(lhs.ty)?;
+        Ok(rhs.ty)
     }
 }

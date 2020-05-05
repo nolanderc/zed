@@ -1,8 +1,9 @@
+mod codegen;
 mod hir;
 mod lexer;
-mod syntax;
-mod codegen;
 mod linker;
+mod syntax;
+mod type_check;
 
 use std::fs;
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ fn main() {
         Err(e) => {
             eprintln!("Error: {}", e);
             process::exit(1);
-        },
+        }
         Ok(()) => (),
     }
 }
@@ -44,20 +45,4 @@ fn analyze(input: &str) -> Result<hir::Module, Box<dyn std::error::Error>> {
     let ast = syntax::parse(&tokens).map_err(|e| e.format(input))?;
     let module = hir::Module::load(&ast)?;
     Ok(module)
-}
-
-#[test]
-fn sample() {
-    let text = include_str!("../samples/sample.zed");
-    if let Err(e) = analyze(text) {
-        panic!("error:\n{}", e);
-    }
-}
-
-#[test]
-fn hello_world() {
-    let text = include_str!("../samples/hello_world.zed");
-    if let Err(e) = analyze(text) {
-        panic!("error:\n{}", e);
-    }
 }

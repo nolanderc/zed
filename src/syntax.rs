@@ -73,6 +73,7 @@ pub enum Expr {
 pub enum ExprControl {
     Break(ExprBreak),
     Continue(ExprContinue),
+    Return(ExprReturn),
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +84,12 @@ pub struct ExprBreak {
 #[derive(Debug, Clone)]
 pub struct ExprContinue {
     pub continue_token: Token,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExprReturn {
+    pub return_token: Token,
+    pub value: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]
@@ -134,14 +141,35 @@ macro_rules! binary_operators {
                         )*
                 ))(input)
             }
+
+            fn precedence(self) -> u32 {
+                match self {
+                    $(
+                        $ident::$op => $precedence,
+                    )*
+                }
+            }
         }
     }
 }
 
 binary_operators! {
     pub enum BinaryOperator {
-        Dot (2) = '.',
-        Range (1) = Symbol::Range,
+        Mul (3) = '*',
+        Div (3) = '/',
+        Mod (3) = '%',
+
+        Add (2) = '+',
+        Sub (2) = '-',
+
+        Dot (1) = '.',
+
+        Equal (0) = Symbol::Equal,
+        NotEqual (0) = Symbol::NotEqual,
+        GreaterThanEqual (0) = Symbol::GreaterThanEqual,
+        GreaterThan (0) = '>',
+        LessThanEqual (0) = Symbol::LessThanEqual,
+        LessThan (0) = '<',
     }
 }
 
@@ -268,7 +296,6 @@ pub struct Initializer {
 
 #[derive(Debug, Clone)]
 pub struct ReturnClause {
-    pub arrow_token: Token,
     pub ty: Type,
 }
 
@@ -608,10 +635,7 @@ fn function_signature(input: Input) -> PResult<Signature> {
 }
 
 fn return_clause(input: Input) -> PResult<ReturnClause> {
-    map(
-        pair(symbol(Symbol::ThinArrow), parse_type),
-        |(arrow_token, ty)| ReturnClause { arrow_token, ty },
-    )(input)
+    map(parse_type, |ty| ReturnClause { ty })(input)
 }
 
 fn expr_statement(input: Input) -> PResult<Expr> {
@@ -681,15 +705,6 @@ fn expr_infix(mut lhs: Expr, min_precedence: u32) -> impl FnOnce(Input) -> PResu
         }
 
         Ok((input, lhs))
-    }
-}
-
-impl BinaryOperator {
-    fn precedence(self) -> u32 {
-        match self {
-            BinaryOperator::Dot => 2,
-            BinaryOperator::Range => 1,
-        }
     }
 }
 
@@ -850,6 +865,7 @@ fn expr_control(input: Input) -> PResult<ExprControl> {
     alt((
         map(expr_break, ExprControl::Break),
         map(expr_continue, ExprControl::Continue),
+        map(expr_return, ExprControl::Return),
     ))(input)
 }
 
@@ -863,6 +879,16 @@ fn expr_continue(input: Input) -> PResult<ExprContinue> {
     map(keyword(Keyword::Continue), |continue_token| ExprContinue {
         continue_token,
     })(input)
+}
+
+fn expr_return(input: Input) -> PResult<ExprReturn> {
+    map(
+        pair(keyword(Keyword::Return), opt(expr_inline)),
+        |(return_token, value)| ExprReturn {
+            return_token,
+            value,
+        },
+    )(input)
 }
 
 fn expr_for_loop(input: Input) -> PResult<ExprFor> {

@@ -4,14 +4,14 @@ const print = fn (text str) {
     printf("Message: %s\n", text);
 }
 
-const not = fn (value bool) -> bool {
+const not = fn (value bool) bool {
     if value { false } else { true }
 }
 
-const main = fn () -> i32 {
+const main = fn () i32 {
     let message = "Bye bye.";
 
-    print({ 
+    print({
         let message = "Creating greeting...";
         print(message);
         "Hello, world!"
@@ -29,17 +29,57 @@ const main = fn () -> i32 {
         text = "nothing to see here";
     };
 
-    let mut zero = false;
-    let mut one = false;
-    let mut two = false;
+    print(text);
 
-    while not(zero) {
-        printf("WOW!\n");
-        zero = one;
-        one = two;
-        two = true;
+
+    let mut i = 0u32;
+    while i < 10 {
+        printf("fib(%d) = %2d\n", i, fib(i));
+        i = i + 1;
     }
+
+    let mut i = 0u32;
+    printf("primes: ");
+    while i < 100 {
+        if is_prime(i) {
+            printf("%d ", i);
+        }
+        i = i + 1;
+    }
+    printf("\n");
 
     14
 }
+
+
+const fib = fn (n u32) u32 {
+    let mut a = 0u32;
+    let mut b = 1u32;
+    let mut i = 0u32;
+
+    while i < n {
+        i = i + 1;
+        let tmp = b;
+        b = b + a;
+        a = tmp;
+    }
+
+    b
+}
+
+
+const is_prime = fn (n u32) bool {
+    let mut i = 2u32;
+
+    while i * i <= n {
+        if n % i == 0 {
+            return false;
+        }
+
+        i = i + 1;
+    }
+
+    n > 1
+}
+
 

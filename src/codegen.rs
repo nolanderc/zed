@@ -9,7 +9,7 @@ use inkwell::types::{BasicType, BasicTypeEnum, FunctionType};
 use inkwell::values::{
     BasicValue, BasicValueEnum, FloatValue, FunctionValue, IntValue, PointerValue,
 };
-use inkwell::{AddressSpace, IntPredicate, OptimizationLevel};
+use inkwell::{AddressSpace, FloatPredicate, IntPredicate, OptimizationLevel};
 
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -243,6 +243,10 @@ struct Label<'ctx> {
     end: BasicBlock<'ctx>,
 }
 
+trait BuildOperator<'ctx, T>: Fn(&Builder<'ctx>, T, T, &str) -> T {}
+
+impl<'ctx, F, T> BuildOperator<'ctx, T> for F where F: Fn(&Builder<'ctx>, T, T, &str) -> T {}
+
 impl<'ctx, 'a> FunctionEncoder<'ctx, 'a> {
     /// Get or create a new local variable
     fn get_or_insert_local(
@@ -269,7 +273,7 @@ impl<'ctx, 'a> FunctionEncoder<'ctx, 'a> {
     }
 
     fn generate_expr(&mut self, ast: &hir::Expr) -> Option<BasicValueEnum<'ctx>> {
-        match &ast.kind {
+        match &*ast.kind {
             hir::ExprKind::Block(block) => self.generate_expr_block(block),
             hir::ExprKind::Literal(literal) => self.generate_literal(literal).into(),
             hir::ExprKind::Invocation(invocation) => self.generate_invocation(invocation),
@@ -293,6 +297,11 @@ impl<'ctx, 'a> FunctionEncoder<'ctx, 'a> {
                 self.generate_jump(jump);
                 None
             }
+            hir::ExprKind::Return(ret) => {
+                self.generate_return(ret);
+                None
+            }
+            hir::ExprKind::Intrinsic(intrinsic) => self.generate_intrinsic(intrinsic),
         }
     }
 
@@ -316,13 +325,174 @@ impl<'ctx, 'a> FunctionEncoder<'ctx, 'a> {
             let value = self.generate_expr(arg).unwrap();
             arguments.push(value.try_into().unwrap());
         }
-
         match invocation.target {
             hir::Identifier::Global(hir::Item::Const(constant)) => {
                 self.generate_function_call(constant, &arguments)
             }
             _ => todo!("invoke {:?}", invocation.target),
         }
+    }
+
+    fn generate_intrinsic(&mut self, intrinsic: &hir::Intrinsic) -> Option<BasicValueEnum<'ctx>> {
+        match intrinsic {
+            hir::Intrinsic::Compare(numeracy, comparison, lhs, rhs) => {
+                let lhs = self.generate_expr(lhs).unwrap();
+                let rhs = self.generate_expr(rhs).unwrap();
+                Some(
+                    self.generate_compare(*numeracy, *comparison, lhs, rhs)
+                        .into(),
+                )
+            }
+
+            hir::Intrinsic::Add(lhs, rhs) => self
+                .generate_bin_op(lhs, rhs, Builder::build_int_add, Builder::build_float_add)
+                .into(),
+            hir::Intrinsic::Sub(lhs, rhs) => self
+                .generate_bin_op(lhs, rhs, Builder::build_int_sub, Builder::build_float_sub)
+                .into(),
+            hir::Intrinsic::Mul(lhs, rhs) => self
+                .generate_bin_op(lhs, rhs, Builder::build_int_mul, Builder::build_float_mul)
+                .into(),
+            hir::Intrinsic::Div(numeracy, lhs, rhs) => match numeracy {
+                hir::Numeracy::Integer(sign) => {
+                    let builder = match sign {
+                        hir::Sign::Signed => Builder::build_int_signed_div,
+                        hir::Sign::Unsigned => Builder::build_int_unsigned_div,
+                    };
+                    Some(self.generate_bin_op_int(lhs, rhs, builder).into())
+                }
+                hir::Numeracy::Float => {
+                    let result = self.generate_bin_op_float(lhs, rhs, Builder::build_float_div);
+                    Some(result.into())
+                }
+            },
+            hir::Intrinsic::Mod(numeracy, lhs, rhs) => match numeracy {
+                hir::Numeracy::Integer(sign) => {
+                    let builder = match sign {
+                        hir::Sign::Signed => Builder::build_int_signed_rem,
+                        hir::Sign::Unsigned => Builder::build_int_unsigned_rem,
+                    };
+                    Some(self.generate_bin_op_int(lhs, rhs, builder).into())
+                }
+                hir::Numeracy::Float => {
+                    let result = self.generate_bin_op_float(lhs, rhs, Builder::build_float_rem);
+                    Some(result.into())
+                }
+            },
+        }
+    }
+
+    fn generate_bin_op(
+        &mut self,
+        lhs: &hir::Expr,
+        rhs: &hir::Expr,
+        integer_operator: impl BuildOperator<'ctx, IntValue<'ctx>>,
+        float_operator: impl BuildOperator<'ctx, FloatValue<'ctx>>,
+    ) -> BasicValueEnum<'ctx> {
+        let lhs = self.generate_expr(lhs).unwrap();
+        let rhs = self.generate_expr(rhs).unwrap();
+
+        if lhs.is_int_value() {
+            let lhs = lhs.into_int_value();
+            let rhs = rhs.into_int_value();
+            integer_operator(&self.builder, lhs, rhs, "operator").into()
+        } else if lhs.is_float_value() {
+            let lhs = lhs.into_float_value();
+            let rhs = rhs.into_float_value();
+            float_operator(&self.builder, lhs, rhs, "operator").into()
+        } else {
+            unreachable!("expected a numeric type (integer or float)");
+        }
+    }
+
+    fn generate_bin_op_int(
+        &mut self,
+        lhs: &hir::Expr,
+        rhs: &hir::Expr,
+        build: impl BuildOperator<'ctx, IntValue<'ctx>>,
+    ) -> IntValue<'ctx> {
+        let lhs = self.generate_expr(lhs).unwrap().into_int_value();
+        let rhs = self.generate_expr(rhs).unwrap().into_int_value();
+        build(&self.builder, lhs, rhs, "operator")
+    }
+
+    fn generate_bin_op_float(
+        &mut self,
+        lhs: &hir::Expr,
+        rhs: &hir::Expr,
+        build: impl BuildOperator<'ctx, FloatValue<'ctx>>,
+    ) -> FloatValue<'ctx> {
+        let lhs = self.generate_expr(lhs).unwrap().into_float_value();
+        let rhs = self.generate_expr(rhs).unwrap().into_float_value();
+        build(&self.builder, lhs, rhs, "operator")
+    }
+
+    fn generate_compare(
+        &mut self,
+        numeracy: hir::Numeracy,
+        comparison: hir::Comparison,
+        lhs: BasicValueEnum<'ctx>,
+        rhs: BasicValueEnum<'ctx>,
+    ) -> IntValue<'ctx> {
+        match numeracy {
+            hir::Numeracy::Integer(sign) => {
+                let lhs = lhs.into_int_value();
+                let rhs = rhs.into_int_value();
+                self.generate_int_compare(sign, comparison, lhs, rhs)
+            }
+            hir::Numeracy::Float => {
+                let lhs = lhs.into_float_value();
+                let rhs = rhs.into_float_value();
+                self.generate_float_compare(comparison, lhs, rhs)
+            }
+        }
+    }
+
+    fn generate_int_compare(
+        &mut self,
+        sign: hir::Sign,
+        comparison: hir::Comparison,
+        lhs: IntValue<'ctx>,
+        rhs: IntValue<'ctx>,
+    ) -> IntValue<'ctx> {
+        use hir::{Comparison::*, Sign::*};
+
+        let predicate = match (sign, comparison) {
+            (_, Equal) => IntPredicate::EQ,
+            (_, NotEqual) => IntPredicate::NE,
+            (Signed, LessThan) => IntPredicate::SLT,
+            (Signed, GreaterThan) => IntPredicate::SGT,
+            (Signed, LessThanEqual) => IntPredicate::SLE,
+            (Signed, GreaterThanEqual) => IntPredicate::SGE,
+            (Unsigned, LessThan) => IntPredicate::ULT,
+            (Unsigned, GreaterThan) => IntPredicate::UGT,
+            (Unsigned, LessThanEqual) => IntPredicate::ULE,
+            (Unsigned, GreaterThanEqual) => IntPredicate::UGE,
+        };
+
+        self.builder
+            .build_int_compare(predicate, lhs, rhs, "int_cmp")
+    }
+
+    fn generate_float_compare(
+        &mut self,
+        comparison: hir::Comparison,
+        lhs: FloatValue<'ctx>,
+        rhs: FloatValue<'ctx>,
+    ) -> IntValue<'ctx> {
+        use hir::Comparison::*;
+
+        let predicate = match comparison {
+            Equal => FloatPredicate::OEQ,
+            NotEqual => FloatPredicate::ONE,
+            LessThan => FloatPredicate::OLT,
+            GreaterThan => FloatPredicate::OGT,
+            LessThanEqual => FloatPredicate::OLE,
+            GreaterThanEqual => FloatPredicate::OGE,
+        };
+
+        self.builder
+            .build_float_compare(predicate, lhs, rhs, "float_cmp")
     }
 
     fn generate_function_call(
@@ -483,6 +653,16 @@ impl<'ctx, 'a> FunctionEncoder<'ctx, 'a> {
                 self.builder.build_unconditional_branch(label.start);
             }
         }
+    }
+
+    fn generate_return(&mut self, ret: &hir::ExprReturn) {
+        let value = match &ret.value {
+            None => None,
+            Some(value) => self.generate_expr(value),
+        };
+
+        self.builder
+            .build_return(value.as_ref().map(|v| v as &dyn BasicValue));
     }
 
     fn block_not_terminated(&self) -> bool {

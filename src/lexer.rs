@@ -8,6 +8,9 @@ use nom::combinator::*;
 use nom::multi::*;
 use nom::sequence::*;
 
+#[macro_use]
+mod macros;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub span: Span,
@@ -29,61 +32,66 @@ pub enum TokenKind {
     Literal(Literal),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum Keyword {
-    Function,
-    Struct,
-    Enum,
-    Trait,
-    Macro,
+keywords! {
+    pub enum Keyword {
+        Function = "fn",
+        Struct = "struct",
+        Enum = "enum",
 
-    Extern,
+        Extern = "extern",
 
-    Type,
-    Const,
-    Let,
-    Mut,
+        Type = "type",
+        Const = "const",
+        Let = "let",
+        Mut = "mut",
 
-    Loop,
-    While,
-    For,
-    In,
+        Loop = "loop",
+        While = "while",
+        For = "for",
+        In = "in",
 
-    Break,
-    Continue,
+        Break = "break",
+        Continue = "continue",
+        Return = "return",
 
-    If,
-    Else,
+        If = "if",
+        Else = "else",
 
-    True,
-    False,
+        True = "true",
+        False = "false",
 
-    Primitive(Primitive),
+        #[otherwise]
+        Primitive(Primitive),
+    }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum Primitive {
-    U8,
-    U16,
-    U32,
-    U64,
-    I8,
-    I16,
-    I32,
-    I64,
-    F32,
-    F64,
-    Str,
-    Bool,
+keywords! {
+    pub enum Primitive {
+        U8 = "u8",
+        U16 = "u16",
+        U32 = "u32",
+        U64 = "u64",
+        I8 = "i8",
+        I16 = "i16",
+        I32 = "i32",
+        I64 = "i64",
+        F32 = "f32",
+        F64 = "f64",
+        Str = "str",
+        Bool = "bool",
+    }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub enum Symbol {
-    Char(char),
+symbols! {
+    pub enum Symbol {
+        Ellipses = "...",
+        ThinArrow = "->",
 
-    Ellipses,
-    Range,
-    ThinArrow,
+        Equal = "==",
+        NotEqual = "!=",
+        GreaterThanEqual = ">=",
+        LessThanEqual = "<=",
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -134,53 +142,10 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, Error> {
 
 fn token_kind(input: &str) -> PResult<TokenKind> {
     alt((
-        map(keyword, TokenKind::Keyword),
+        map(Keyword::parse, TokenKind::Keyword),
         map(literal, TokenKind::Literal),
         map(identifier, |_| TokenKind::Identifier),
-        map(symbol, TokenKind::Symbol),
-    ))(input)
-}
-
-fn keyword(input: &str) -> PResult<Keyword> {
-    alt((
-        map(tag("fn"), |_| Keyword::Function),
-        map(tag("struct"), |_| Keyword::Struct),
-        map(tag("enum"), |_| Keyword::Enum),
-        map(tag("trait"), |_| Keyword::Trait),
-        map(tag("macro"), |_| Keyword::Macro),
-        map(tag("extern"), |_| Keyword::Extern),
-        map(tag("const"), |_| Keyword::Const),
-        map(tag("type"), |_| Keyword::Type),
-        map(tag("let"), |_| Keyword::Let),
-        map(tag("mut"), |_| Keyword::Mut),
-        map(tag("loop"), |_| Keyword::Loop),
-        map(tag("while"), |_| Keyword::While),
-        map(tag("for"), |_| Keyword::For),
-        map(tag("in"), |_| Keyword::In),
-        map(tag("break"), |_| Keyword::Break),
-        map(tag("continue"), |_| Keyword::Continue),
-        map(tag("if"), |_| Keyword::If),
-        map(tag("else"), |_| Keyword::Else),
-        map(tag("true"), |_| Keyword::True),
-        map(tag("false"), |_| Keyword::False),
-        map(primitive, Keyword::Primitive),
-    ))(input)
-}
-
-fn primitive(input: &str) -> PResult<Primitive> {
-    alt((
-        map(tag("u8"), |_| Primitive::U8),
-        map(tag("u16"), |_| Primitive::U16),
-        map(tag("u32"), |_| Primitive::U32),
-        map(tag("u64"), |_| Primitive::U64),
-        map(tag("i8"), |_| Primitive::I8),
-        map(tag("i16"), |_| Primitive::I16),
-        map(tag("i32"), |_| Primitive::I32),
-        map(tag("i64"), |_| Primitive::I64),
-        map(tag("f32"), |_| Primitive::F32),
-        map(tag("f64"), |_| Primitive::F64),
-        map(tag("str"), |_| Primitive::Str),
-        map(tag("bool"), |_| Primitive::Bool),
+        map(Symbol::parse, TokenKind::Symbol),
     ))(input)
 }
 
@@ -216,15 +181,6 @@ fn identifier(input: &str) -> PResult<&str> {
     )))(input)
 }
 
-fn symbol(input: &str) -> PResult<Symbol> {
-    alt((
-        map(tag("->"), |_| Symbol::ThinArrow),
-        map(tag("..."), |_| Symbol::Ellipses),
-        map(tag(".."), |_| Symbol::Range),
-        map(anychar, Symbol::Char),
-    ))(input)
-}
-
 impl From<char> for Symbol {
     fn from(ch: char) -> Self {
         Symbol::Char(ch)
@@ -239,76 +195,6 @@ impl Display for TokenKind {
             TokenKind::Keyword(keyword) => Display::fmt(keyword, f),
             TokenKind::Literal(literal) => Display::fmt(literal, f),
         }
-    }
-}
-
-impl Display for Symbol {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Symbol::Char(ch) => write!(f, "`{}`", ch),
-            Symbol::Ellipses => "`...`".fmt(f),
-            Symbol::Range => "`..`".fmt(f),
-            Symbol::ThinArrow => "`->`".fmt(f),
-        }
-    }
-}
-
-impl Display for Keyword {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Keyword::Function => "`fn`".fmt(f),
-            Keyword::Struct => "`struct`".fmt(f),
-            Keyword::Enum => "`enum`".fmt(f),
-            Keyword::Trait => "`trait`".fmt(f),
-            Keyword::Macro => "`macro`".fmt(f),
-            Keyword::Extern => "`extern`".fmt(f),
-
-            Keyword::Type => "`type`".fmt(f),
-            Keyword::Const => "`const`".fmt(f),
-            Keyword::Let => "`let`".fmt(f),
-            Keyword::Mut => "`mut`".fmt(f),
-
-            Keyword::Loop => "`loop`".fmt(f),
-            Keyword::While => "`while`".fmt(f),
-            Keyword::For => "`for`".fmt(f),
-            Keyword::In => "`in`".fmt(f),
-
-            Keyword::Break => "`break`".fmt(f),
-            Keyword::Continue => "`continue`".fmt(f),
-
-            Keyword::If => "`if`".fmt(f),
-            Keyword::Else => "`else`".fmt(f),
-
-            Keyword::True => "`true`".fmt(f),
-            Keyword::False => "`false`".fmt(f),
-
-            Keyword::Primitive(primitive) => Display::fmt(primitive, f),
-        }
-    }
-}
-
-impl Primitive {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Primitive::U8 => "u8",
-            Primitive::U16 => "u16",
-            Primitive::U32 => "u32",
-            Primitive::U64 => "u64",
-            Primitive::I8 => "i8",
-            Primitive::I16 => "i16",
-            Primitive::I32 => "i32",
-            Primitive::I64 => "i64",
-            Primitive::F32 => "f32",
-            Primitive::F64 => "f64",
-            Primitive::Str => "str",
-            Primitive::Bool => "bool",
-        }
-    }
-}
-
-impl Display for Primitive {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "`{}`", self.as_str())
     }
 }
 

@@ -1,24 +1,85 @@
 type Age = u32;
 
-type Person = struct {
-    id u32,
-    name str, 
-    age Age,
+type Person = struct (
+    id: u32,
+    name: str, 
+    age: Age,
+);
+
+type Option T = enum (Some T | None);
+
+type Result T E = enum (
+    Ok T,
+    Err E,
+);
+
+const printf = extern fn (format str, ...);
+
+const identity T = fn (value T) T { 
+    value 
 }
 
-const puts = extern fn (text str);
-
-const main = fn () -> i32 {
+const main = fn () i32 {
     puts("Hello, World");
 
     let age = 42u32;
-    let person = Person {
+    let person = Person (
         .id = 1u32,
         .name = "John Wick",
         .age = Age(age),
-    };
+    );
 
     puts(person.name);
 
     42
 }
+
+type HasNumber = trait {
+    const number = fn () -> u32;
+};
+
+// A where block introduces constraints on types.
+const get_number T = fn (value T) -> u32 where T: HasNumber {
+    value.number()
+}
+
+type Doubler = trait {
+    const double = fn (n u32) -> u32;
+};
+
+// Generic specialization.
+const number_or_double T = fn (value T) -> u32 where T: HasNumber {
+    value.number()
+} else where T: Doubler {
+    value.double(21)
+} else {
+    14
+}
+
+
+type Range = impl Generator () u32 ();
+const range = fn (start: u32, end: u32) -> Range {
+    gen {
+        while start < end {
+            yield start;
+            start = start + 1;
+        }
+    }
+}
+
+// Creates a new generator that takes resume arguments u32 and str, yields u32's and returns ()
+// when done.
+const generator = fn (n: u32) -> Generator -> (step: u32, text: str) -> u32 () {
+    // Create a new generator with initial resume arguments 
+    gen (step, text) {
+        let mut i = 0u32;
+        while i < n { 
+            let value = i;
+            i = i + step;
+            // Yield the next value and get the next resume arguments
+            let args = yield value;
+            step, text = args.step, args.text;
+        }
+    }
+}
+

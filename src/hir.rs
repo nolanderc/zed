@@ -38,6 +38,8 @@ struct Allocation<'a> {
 #[derive(Debug)]
 struct Scope<'a> {
     namespace: &'a Namespace,
+    signature: &'a Signature,
+
     parent: Option<&'a Scope<'a>>,
 
     items: Vec<(Rc<str>, Identifier)>,
@@ -123,7 +125,7 @@ pub struct ExternFunction;
 #[derive(Debug)]
 pub struct Expr {
     pub ty: TypeId,
-    pub kind: ExprKind,
+    pub kind: Box<ExprKind>,
 }
 
 #[derive(Debug)]
@@ -139,13 +141,21 @@ pub enum ExprKind {
     Branch(ExprBranch),
     Loop(ExprLoop),
     Jump(ExprJump),
+    Return(ExprReturn),
+    Intrinsic(Intrinsic),
 }
 
 #[derive(Debug)]
 pub struct ExprLoop {
     pub label: LabelId,
-    pub expr: Box<Expr>,
+    pub expr: Expr,
 }
+
+#[derive(Debug)]
+pub struct ExprReturn {
+    pub value: Option<Expr>,
+}
+
 
 #[derive(Debug)]
 pub struct ExprJump {
@@ -166,9 +176,9 @@ pub struct ExprBlock {
 
 #[derive(Debug)]
 pub struct ExprBranch {
-    pub condition: Box<Expr>,
-    pub success: Box<Expr>,
-    pub failure: Box<Expr>,
+    pub condition: Expr,
+    pub success: Expr,
+    pub failure: Expr,
 }
 
 #[derive(Debug)]
@@ -178,33 +188,54 @@ pub struct ExprInvocation {
 }
 
 #[derive(Debug)]
-pub enum Callable {
-    Identifier(Identifier),
-    Intrinsic(Intrinsic),
+pub enum Intrinsic {
+    Add(Expr, Expr),
+    Sub(Expr, Expr),
+    Mul(Expr, Expr),
+    Div(Numeracy, Expr, Expr),
+    Mod(Numeracy, Expr, Expr),
+
+    Compare(Numeracy, Comparison, Expr, Expr),
 }
 
-#[derive(Debug)]
-pub enum Intrinsic {
-    SignedIntegerAdd,
-    UnsignedIntegerAdd,
+#[derive(Debug, Copy, Clone)]
+pub enum Numeracy {
+    Integer(Sign),
+    Float,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Sign {
+    Signed,
+    Unsigned,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Comparison {
+    Equal,
+    NotEqual,
+    LessThan,
+    GreaterThan,
+    LessThanEqual,
+    GreaterThanEqual,
 }
 
 #[derive(Debug)]
 pub struct ExprBinding {
     pub mutable: bool,
     pub local: LocalId,
-    pub value: Box<Expr>,
+    pub value: Expr,
 }
 
 #[derive(Debug)]
 pub struct ExprAssign {
     pub local: LocalId,
-    pub value: Box<Expr>,
+    pub value: Expr,
 }
 
 #[derive(Debug)]
 pub struct ExprAccess {
-    pub base: Box<Expr>,
+    pub base: Expr,
     pub property: PropertyId,
 }
 
@@ -217,7 +248,7 @@ pub struct ExprConstructor {
 #[derive(Debug)]
 pub struct ExprInitializer {
     pub property: PropertyId,
-    pub value: Box<Expr>,
+    pub value: Expr,
 }
 
 #[derive(Debug, Clone)]
@@ -303,6 +334,9 @@ pub enum Error {
 
     #[error("no enclosing label in scope")]
     NoEnclosingLabel,
+
+    #[error("intrinsic only allowed on numeric types")]
+    NumericRequired,
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -415,9 +449,10 @@ impl Namespace {
 }
 
 impl<'a> Scope<'a> {
-    fn new(namespace: &'a Namespace) -> Scope<'a> {
+    fn new(namespace: &'a Namespace, signature: &'a Signature) -> Scope<'a> {
         Scope {
             namespace,
+            signature,
             parent: None,
             items: Vec::new(),
             next_local: LocalId(0),
@@ -595,6 +630,59 @@ impl Module {
     }
 }
 
+impl TypeId {
+    fn numeracy(self) -> Option<Numeracy> {
+        match self {
+            Namespace::TYPE_I8
+            | Namespace::TYPE_I16
+            | Namespace::TYPE_I32
+            | Namespace::TYPE_I64 => Some(Numeracy::Integer(Sign::Signed)),
+            Namespace::TYPE_U8
+            | Namespace::TYPE_U16
+            | Namespace::TYPE_U32
+            | Namespace::TYPE_U64 => Some(Numeracy::Integer(Sign::Unsigned)),
+            Namespace::TYPE_F32 | Namespace::TYPE_F64 => Some(Numeracy::Float),
+            _ => None,
+        }
+    }
+
+    fn is_integer_signed(self) -> bool {
+        match self {
+            Namespace::TYPE_I8 => true,
+            Namespace::TYPE_I16 => true,
+            Namespace::TYPE_I32 => true,
+            Namespace::TYPE_I64 => true,
+            _ => false,
+        }
+    }
+
+    fn is_integer_unsigned(self) -> bool {
+        match self {
+            Namespace::TYPE_U8 => true,
+            Namespace::TYPE_U16 => true,
+            Namespace::TYPE_U32 => true,
+            Namespace::TYPE_U64 => true,
+            _ => false,
+        }
+    }
+
+    fn is_integer(self) -> bool {
+        self.is_integer_signed() || self.is_integer_unsigned()
+    }
+
+    fn is_float(self) -> bool {
+        match self {
+            Namespace::TYPE_F32 => true,
+            Namespace::TYPE_F64 => true,
+            _ => false,
+        }
+    }
+
+    fn is_numeric(self) -> bool {
+        self.is_integer() || self.is_float()
+    }
+}
+
 impl Type {
     pub fn unit() -> Type {
         Type::Alias(Namespace::TYPE_UNIT)
@@ -664,7 +752,7 @@ impl Function {
         signature: &Signature,
         namespace: &Namespace,
     ) -> Result<Function> {
-        let mut scope = Scope::new(namespace);
+        let mut scope = Scope::new(namespace, signature);
 
         for (arg, ty) in function
             .signature
