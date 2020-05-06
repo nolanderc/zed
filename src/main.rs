@@ -1,15 +1,22 @@
+#[doc(inline)]
+pub use std;
+
+#[macro_use]
+extern crate tracing;
+
 mod codegen;
 mod hir;
 mod lexer;
 mod linker;
 mod syntax;
+mod trace;
 mod type_check;
 
 use std::fs;
 use std::path::PathBuf;
 use std::process;
-
 use structopt::StructOpt;
+use tracing_subscriber::layer::SubscriberExt;
 
 #[derive(StructOpt)]
 struct Options {
@@ -18,6 +25,9 @@ struct Options {
 }
 
 fn main() {
+    let subscriber = tracing_subscriber::Registry::default().with(trace::Tree::new(2));
+    let _ = tracing::subscriber::set_default(subscriber);
+
     match run() {
         Err(e) => {
             eprintln!("Error: {}", e);

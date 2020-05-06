@@ -1,12 +1,12 @@
 type Age = u32;
 
-type Person = struct (
+type Person = (
     id: u32,
     name: str, 
     age: Age,
 );
 
-type Option T = enum (Some T | None);
+type Option T = { Some T | None, };
 
 type Result T E = enum (
     Ok T,
@@ -26,7 +26,7 @@ const main = fn () i32 {
     let person = Person (
         .id = 1u32,
         .name = "John Wick",
-        .age = Age(age),
+        .age = Age age,
     );
 
     puts(person.name);
